@@ -1,0 +1,49 @@
+from __future__ import annotations
+
+from PySide6.QtCore import Signal
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QListWidget, QPushButton, QVBoxLayout, QWidget
+
+
+class ProjectPanel(QWidget):
+    new_requested = Signal()
+    job_selected = Signal(str)
+    settings_requested = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        title = QLabel("ForgeFlow")
+        title.setObjectName("title")
+        layout.addWidget(title)
+        layout.addWidget(QLabel("최근 작업"))
+        self.jobs = QListWidget()
+        self.jobs.currentItemChanged.connect(self._selected)
+        layout.addWidget(self.jobs, 1)
+        row = QHBoxLayout()
+        new_button = QPushButton("새 작업")
+        new_button.clicked.connect(self.new_requested)
+        settings = QPushButton("설정")
+        settings.clicked.connect(self.settings_requested)
+        row.addWidget(new_button)
+        row.addWidget(settings)
+        layout.addLayout(row)
+
+    def set_jobs(self, jobs, selected_id: str | None = None) -> None:
+        self.jobs.blockSignals(True)
+        self.jobs.clear()
+        selected_row = 0
+        for index, job in enumerate(jobs):
+            item_text = f"{job.name}\n{job.job_id}\n모델링 {job.stages['modeling'].status} · Blender {job.stages['blender'].status}"
+            self.jobs.addItem(item_text)
+            item = self.jobs.item(index)
+            item.setData(256, job.job_id)
+            if job.job_id == selected_id:
+                selected_row = index
+        self.jobs.blockSignals(False)
+        if self.jobs.count():
+            self.jobs.setCurrentRow(selected_row)
+
+    def _selected(self, current, _previous) -> None:
+        if current:
+            self.job_selected.emit(current.data(256))
+

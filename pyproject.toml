@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "forgeflow"
+version = "0.1.0"
+description = "Windows desktop orchestrator for local image-to-3D, Blender editing, and Unity rigging/animation"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.12"
+dependencies = ["PySide6>=6.8,<7"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3,<10"]
+
+[project.scripts]
+forgeflow = "forgeflow.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/forgeflow"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
