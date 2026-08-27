@@ -43,12 +43,29 @@ async def propose(args: argparse.Namespace) -> int:
     settings = AgentSettings.load()
     emit("stage_started", stage="blender_plan", message="장면 검사 및 실행 계획 생성 중")
     agent = BlenderPromptAgent(settings)
+    attempts: list[dict[str, Any]] = []
     try:
-        result = await agent.run(args.prompt, approval_callback=lambda _plan: False)
+        prompt = args.prompt
+        result = await agent.run(prompt, approval_callback=lambda _plan: False)
+        attempts.append({"session_id": result.session_id, "status": result.status, "summary": result.summary})
+        if result.plan is None and result.status == "completed":
+            emit(
+                "progress",
+                stage="blender_plan",
+                message="설명문만 반환되어 구조화 실행 계획을 한 번 다시 요청합니다.",
+            )
+            prompt = (
+                args.prompt
+                + "\n중요: 이전 응답은 설명문으로 끝나 실행 계획이 생성되지 않았다. "
+                "변경 요청을 한국어로 설명만 하지 말고, 반드시 필요한 asset.* 도구를 "
+                "Ollama tool_calls 형식으로 실제 호출 제안하라. 쓰기는 아직 실행되지 않고 승인 대기 계획으로만 저장된다."
+            )
+            result = await agent.run(prompt, approval_callback=lambda _plan: False)
+            attempts.append({"session_id": result.session_id, "status": result.status, "summary": result.summary})
     finally:
         await agent.aclose()
     payload = result.model_dump(mode="json")
-    envelope = {"schema_version": 1, "prompt": args.prompt, "result": payload}
+    envelope = {"schema_version": 1, "prompt": args.prompt, "attempts": attempts, "result": payload}
     if result.plan is not None:
         plan_value = result.plan.model_dump(mode="json")
         envelope["plan_sha256"] = canonical_hash(plan_value)
@@ -169,4 +186,3 @@ async def async_main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(asyncio.run(async_main()))
-

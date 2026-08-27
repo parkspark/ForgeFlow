@@ -55,7 +55,8 @@ class BlenderAdapter:
         enriched = (
             f"input_path는 '{input_path}'이고 output_directory는 '{version_dir.resolve()}'이다. "
             "먼저 scene.inspect로 장면을 검사하고 실제 이름을 확인한 다음, 아래 요청에 필요한 허용된 작업만 계획해줘. "
-            "다른 입력·출력 경로를 사용하지 마.\n사용자 요청: " + request_text
+            "다른 입력·출력 경로를 사용하지 마. 수정 요청은 설명문으로 끝내지 말고 반드시 필요한 asset.* 도구를 "
+            "Ollama tool_calls 형식으로 제안해 승인 대기 계획을 만들어라.\n사용자 요청: " + request_text
         )
         record = BlenderRequest(
             request=request_text,
@@ -136,4 +137,3 @@ class BlenderAdapter:
         session_dir = jobs_root.parent / "environment-sessions"
         environment = self.config.agent_environment(session_dir)
         return ProcessCommand(str(self.config.agent_python), [str(self.bridge), "check"], self.config.blender_agent_root, environment)
-

@@ -99,6 +99,7 @@ python -u .\scripts\run_full_e2e.py --image C:\absolute\reference.png
 - 지원 범위는 장면 검사, 재질 목록/속성, transform, Bevel, Decimate, Smooth shading, GLB/BLEND/FBX 내보내기뿐입니다.
 - 자유 메시 모델링, 임의 Blender Python, UV 편집, 리토폴로지, 리깅은 UI와 브리지에서 제공하지 않습니다.
 - 자연어 계획 품질은 로컬 Ollama 모델에 의존하며 정확한 오브젝트/재질 이름이 요청에 없으면 에이전트가 실행 대신 후보 확인을 요구할 수 있습니다.
+- Ollama가 구조화된 `tool_calls` 대신 설명문만 반환하면 ForgeFlow가 계획 형식을 한 번 자동 재요청합니다. 재요청도 실패하면 쓰기 작업 없이 실패로 표시합니다.
 - Pixal3D 1024 생성은 이 PC의 실제 E2E에서 약 6분 이상 걸렸으며 UV 파라미터화 동안 GPU 사용률이 낮아도 CPU 작업이 계속될 수 있습니다.
 - MCP의 고유 operation-id 하위 폴더는 비덮어쓰기 보장을 위해 유지합니다.
 - `.runs`의 시도별 엔진 출력은 진단과 실패 증거를 위해 자동 삭제하지 않습니다.
