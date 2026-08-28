@@ -60,7 +60,7 @@ def produce(run, *, omit: str | None = None, empty: str | None = None, **overrid
     return paths
 
 
-def test_schema_v1_migrates_to_v2_without_losing_fields(config, image):
+def test_schema_v1_migrates_to_v3_without_losing_fields(config, image):
     jobs = JobService(config.jobs_root)
     job = jobs.create("legacy", image)
     path = jobs.job_directory(job.job_id) / "job.json"
@@ -72,10 +72,10 @@ def test_schema_v1_migrates_to_v2_without_losing_fields(config, image):
     payload["stages"].pop("rigging", None)
     path.write_text(json.dumps(payload), encoding="utf-8")
     restored = jobs.load(job.job_id)
-    assert restored.schema_version == 2
+    assert restored.schema_version == 3
     assert restored.stages["rigging"].status == "pending"
     assert restored.generation_settings["legacy_value"] == "keep"
-    assert json.loads(path.read_text(encoding="utf-8"))["schema_version"] == 2
+    assert json.loads(path.read_text(encoding="utf-8"))["schema_version"] == 3
 
 
 def test_future_schema_is_rejected(config, image):

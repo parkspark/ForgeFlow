@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import ctypes
 from dataclasses import replace
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from PySide6.QtWidgets import (
 from forgeflow.adapters.blender_adapter import BlenderAdapter
 from forgeflow.adapters.modeling_adapter import ModelingAdapter
 from forgeflow.adapters.rigging_adapter import RiggingAdapter
+from forgeflow.adapters.unity_adapter import UnityAdapter
 from forgeflow.config import AppConfig
 from forgeflow.domain.job import Job
 from forgeflow.services.environment_service import EnvironmentWorker
@@ -26,6 +28,7 @@ from .project_panel import ProjectPanel
 from .rigging_panel import RiggingPanel
 from .settings_dialog import SettingsDialog
 from .theme import build_stylesheet, normalize_theme
+from .unity_panel import UnityPanel
 
 
 class MainWindow(QMainWindow):
@@ -39,6 +42,7 @@ class MainWindow(QMainWindow):
             self.jobs, ModelingAdapter(self.config, self.jobs), BlenderAdapter(self.config, self.jobs),
             RiggingAdapter(self.config, self.jobs), self
         )
+        self.unity = UnityAdapter(self.config, self.jobs, self)
         self.environment_worker: EnvironmentWorker | None = None
         self._build_ui()
         self._connect()
@@ -85,10 +89,12 @@ class MainWindow(QMainWindow):
         self.modeling_panel = ModelingPanel()
         self.blender_panel = BlenderPanel()
         self.rigging_panel = RiggingPanel()
+        self.unity_panel = UnityPanel()
         self.log_panel = LogPanel()
         self.tabs.addTab(self.modeling_panel, "1. 이미지 → 3D")
         self.tabs.addTab(self.blender_panel, "2. Blender 자연어 편집")
         self.tabs.addTab(self.rigging_panel, "3. Humanoid 리깅")
+        self.tabs.addTab(self.unity_panel, "4. Unity 텍스트 컨트롤")
         self.tabs.addTab(self.log_panel, "실행 로그")
         splitter.addWidget(self.tabs)
         splitter.setStretchFactor(1, 1)
@@ -113,6 +119,24 @@ class MainWindow(QMainWindow):
         self.rigging_panel.run_requested.connect(self.start_rigging)
         self.rigging_panel.open_file_requested.connect(self.open_path)
         self.rigging_panel.open_folder_requested.connect(self.open_path)
+        self.unity_panel.browse_project_requested.connect(self.choose_unity_project)
+        self.unity_panel.connect_requested.connect(self.connect_unity)
+        self.unity_panel.disconnect_requested.connect(self.disconnect_unity)
+        self.unity_panel.open_project_requested.connect(self.open_unity_project)
+        self.unity_panel.import_fbx_requested.connect(self.import_unity_fbx)
+        self.unity_panel.send_requested.connect(self.send_unity_prompt)
+        self.unity_panel.cancel_requested.connect(self.cancel_unity)
+        self.unity_panel.accept_requested.connect(self.accept_unity_review)
+        self.unity_panel.reject_requested.connect(self.reject_unity_review)
+        self.unity_panel.repair_requested.connect(self.repair_unity_turn)
+        self.unity_panel.open_path_requested.connect(self.open_path)
+        self.unity_panel.focus_unity_requested.connect(self.focus_unity)
+        self.unity.event_received.connect(self.unity_panel.append_event)
+        self.unity.event_received.connect(lambda _event: self._reload_unity_job())
+        self.unity.session_changed.connect(self.unity_panel.set_session)
+        self.unity.job_changed.connect(self._job_changed)
+        self.unity.protocol_error.connect(self._unity_error)
+        self.unity.log_received.connect(lambda line: self.log_panel.append(f"[Unity Agent] {line}"))
         self.pipeline.log_received.connect(self.log_panel.append)
         self.pipeline.log_received.connect(self.rigging_panel.append_log)
         self.pipeline.job_changed.connect(self._job_changed)
@@ -180,7 +204,149 @@ class MainWindow(QMainWindow):
         self.rigging_panel.set_job(
             self.current_job, self.pipeline.rigging.available_inputs(self.current_job), self.pipeline.busy
         )
+        self.unity_panel.set_job(self.current_job, self.pipeline.busy)
+        self.unity_panel.set_recent_projects(
+            [item.unity_project_path for item in self.job_list if item.unity_project_path]
+        )
+        if self.unity.job and self.unity.job.job_id == self.current_job.job_id:
+            self.unity_panel.set_session(self.unity.session)
+        else:
+            self.unity_panel.set_session(None)
         self.cancel_button.setEnabled(self.pipeline.busy)
+
+    def choose_unity_project(self) -> None:
+        self.unity_panel.choose_project()
+
+    def connect_unity(self, project_path: str) -> None:
+        if not self.current_job:
+            QMessageBox.warning(self, "Unity 연결", "먼저 ForgeFlow Job을 선택하세요.")
+            return
+        try:
+            session = self.unity.start_session(self.current_job, project_path)
+            self.unity_panel.set_session(session)
+            self.tabs.setCurrentWidget(self.unity_panel)
+            self.statusBar().showMessage(
+                "Unity Agent를 시작했습니다. 프로젝트 identity 확인을 기다리는 중입니다.", 10000
+            )
+        except Exception as exc:
+            QMessageBox.critical(
+                self, "Unity 연결 실패",
+                f"{exc}\n\nUnity Editor에서 이 프로젝트를 연 뒤 Console의 "
+                "`[McpBridge] Listening`을 확인하세요.",
+            )
+
+    def disconnect_unity(self) -> None:
+        self.unity.shutdown()
+        self.unity_panel.set_session(self.unity.session)
+
+    def open_unity_project(self) -> None:
+        path = self.unity_panel.project_path.text().strip()
+        if path:
+            self.open_path(path)
+
+    def import_unity_fbx(self) -> None:
+        if not self.current_job:
+            return
+        project = self.unity_panel.project_path.text().strip()
+        try:
+            result = self.unity.import_humanoid_fbx(self.current_job, project)
+            self.current_job = self.jobs.load(self.current_job.job_id)
+            self._render_job()
+            QMessageBox.information(
+                self, "FBX 가져오기 완료",
+                f"Asset: {result.asset_path}\n원본 SHA-256: {result.source_sha256}\n\n"
+                "기존 Asset은 덮어쓰지 않았으며 .meta는 Unity가 생성합니다.",
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "FBX 가져오기 실패", str(exc))
+
+    def send_unity_prompt(
+        self, text: str, include_asset: bool, include_scene: bool, analyze_screenshot: bool
+    ) -> None:
+        if not self.current_job:
+            return
+        if not self.unity.job or self.unity.job.job_id != self.current_job.job_id:
+            QMessageBox.warning(self, "Unity 명령", "현재 Job으로 Unity 세션을 다시 연결하세요.")
+            return
+        try:
+            self.unity.send_prompt(
+                text, include_asset=include_asset, include_current_scene=include_scene,
+                analyze_screenshot=analyze_screenshot,
+            )
+            self._render_job()
+        except Exception as exc:
+            QMessageBox.critical(self, "Unity 명령 전송 실패", str(exc))
+
+    def cancel_unity(self) -> None:
+        self.unity.cancel_active()
+        self.statusBar().showMessage(
+            "Unity Agent 실행을 취소했습니다. 부분 산출물과 로그는 보존됩니다. "
+            "다음 연결에서 Play Mode와 입력 상태를 확인하세요.", 15000,
+        )
+
+    def accept_unity_review(self, turn_id: str, note: str) -> None:
+        try:
+            self.unity.review_turn(turn_id, True, note)
+            self._reload_unity_job()
+        except Exception as exc:
+            QMessageBox.critical(self, "검토 저장 실패", str(exc))
+
+    def reject_unity_review(self, turn_id: str, note: str) -> None:
+        try:
+            self.unity.review_turn(turn_id, False, note)
+            self._reload_unity_job()
+        except Exception as exc:
+            QMessageBox.critical(self, "검토 저장 실패", str(exc))
+
+    def repair_unity_turn(
+        self, turn_id: str, feedback: str, include_asset: bool,
+        include_scene: bool, analyze_screenshot: bool,
+    ) -> None:
+        try:
+            self.unity.send_review_repair(
+                turn_id, feedback, include_asset=include_asset,
+                include_current_scene=include_scene,
+                analyze_screenshot=analyze_screenshot,
+            )
+            self._render_job()
+        except Exception as exc:
+            QMessageBox.critical(self, "수정 요청 전송 실패", str(exc))
+
+    def _reload_unity_job(self) -> None:
+        if self.current_job:
+            try:
+                self.current_job = self.jobs.load(self.current_job.job_id)
+                self._render_job()
+            except Exception:
+                pass
+
+    def _unity_error(self, message: str) -> None:
+        self.statusBar().showMessage(message, 20000)
+        self.log_panel.append(f"[Unity 오류] {message}")
+
+    def focus_unity(self) -> None:
+        if os.name != "nt":
+            return
+        found: list[int] = []
+        user32 = ctypes.windll.user32
+        callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_int, ctypes.c_int)
+
+        def visit(hwnd, _lparam):
+            length = user32.GetWindowTextLengthW(hwnd)
+            if length:
+                title = ctypes.create_unicode_buffer(length + 1)
+                user32.GetWindowTextW(hwnd, title, length + 1)
+                if "Unity" in title.value and user32.IsWindowVisible(hwnd):
+                    found.append(hwnd)
+                    return False
+            return True
+
+        user32.EnumWindows(callback_type(visit), 0)
+        if found:
+            user32.ShowWindow(found[0], 9)
+            user32.SetForegroundWindow(found[0])
+        else:
+            self.statusBar().showMessage("열린 Unity Editor 창을 찾지 못했습니다.", 8000)
 
     def start_modeling(self) -> None:
         if not self.current_job or self.pipeline.busy:
@@ -318,12 +484,14 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "설정 저장", "설정을 저장했습니다. 안전한 적용을 위해 ForgeFlow를 다시 실행해 주세요.")
 
     def closeEvent(self, event) -> None:
-        if self.pipeline.busy:
+        if self.pipeline.busy or self.unity.running:
             answer = QMessageBox.question(self, "실행 중 종료", "외부 프로세스가 실행 중입니다. 취소하고 종료할까요?")
             if answer != QMessageBox.StandardButton.Yes:
                 event.ignore()
                 return
             self.pipeline.cancel_active()
+        if self.unity.running:
+            self.unity.shutdown()
         if self.environment_worker and self.environment_worker.isRunning():
             self.environment_worker.requestInterruption()
             self.environment_worker.wait(2000)

@@ -25,9 +25,9 @@ def main(argv: list[str] | None = None) -> int:
     result = app.exec()
     if args.smoke_test:
         print("FORGEFLOW_UI_SMOKE_OK")
+        return 0
     return result
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -4,12 +4,16 @@ import hashlib
 import json
 import os
 import shutil
+import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
 from forgeflow.domain.artifact import Artifact
-from forgeflow.domain.job import BlenderRequest, Job, RiggingRequest, STATUSES, utc_now
+from forgeflow.domain.job import (
+    BlenderRequest, Job, RiggingRequest, STATUSES, UnitySession, UnityTurn, utc_now,
+)
 
 
 ALLOWED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg"}
@@ -27,6 +31,7 @@ class JobService:
     def __init__(self, root: Path):
         self.root = root.expanduser().resolve(strict=False)
         self.root.mkdir(parents=True, exist_ok=True)
+        self._save_lock = threading.RLock()
 
     @staticmethod
     def validate_image(path: str | Path) -> Path:
@@ -52,7 +57,7 @@ class JobService:
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         job_id = f"job-{timestamp}-{uuid4().hex[:8]}"
         directory = self.job_directory(job_id)
-        for child in ("input", "modeling", "blender", "rigging", "logs", ".runs"):
+        for child in ("input", "modeling", "blender", "rigging", "unity", "logs", ".runs"):
             (directory / child).mkdir(parents=True, exist_ok=False)
         copied = directory / "input" / f"reference{source.suffix.lower()}"
         shutil.copy2(source, copied)
@@ -70,17 +75,31 @@ class JobService:
         return job
 
     def save(self, job: Job) -> Path:
-        directory = self.job_directory(job.job_id)
-        directory.mkdir(parents=True, exist_ok=True)
-        job.updated_at = utc_now()
-        destination = directory / "job.json"
-        temporary = destination.with_suffix(".json.tmp")
-        with temporary.open("w", encoding="utf-8", newline="\n") as handle:
-            json.dump(job.to_dict(), handle, ensure_ascii=False, indent=2)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, destination)
-        return destination
+        with self._save_lock:
+            directory = self.job_directory(job.job_id)
+            directory.mkdir(parents=True, exist_ok=True)
+            job.updated_at = utc_now()
+            destination = directory / "job.json"
+            temporary = directory / f".job-{uuid4().hex}.json.tmp"
+            try:
+                with temporary.open("w", encoding="utf-8", newline="\n") as handle:
+                    json.dump(job.to_dict(), handle, ensure_ascii=False, indent=2)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                for attempt in range(5):
+                    try:
+                        os.replace(temporary, destination)
+                        break
+                    except PermissionError:
+                        if attempt == 4:
+                            raise
+                        time.sleep(0.05 * (attempt + 1))
+            finally:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            return destination
 
     def load(self, job_id: str) -> Job:
         path = self.job_directory(job_id) / "job.json"
@@ -117,6 +136,17 @@ class JobService:
                         request.status = "failed"
                         request.error = stage.error
                         request.completed_at = stage.completed_at
+                    if name == "unity":
+                        turn = job.latest_unity_turn
+                        if turn and turn.status == "running":
+                            turn.status = "failed"
+                            turn.error = stage.error
+                            turn.completed_at = stage.completed_at
+                        session = job.latest_unity_session
+                        if session and session.status in {"starting", "ready"}:
+                            session.status = "failed"
+                            session.error = stage.error
+                            session.closed_at = stage.completed_at
             if changed:
                 self.save(job)
             recovered.append(job)
@@ -132,7 +162,7 @@ class JobService:
             stage.completed_at = None
             stage.attempts += 1
             stage.error = None
-        if status in {"completed", "failed", "cancelled"}:
+        if status in {"awaiting_review", "completed", "failed", "cancelled"}:
             stage.completed_at = utc_now()
         if error:
             stage.error = error
@@ -174,3 +204,25 @@ class JobService:
     def add_rigging_request(self, job: Job, request: RiggingRequest) -> None:
         job.rigging_requests.append(request)
         self.save(job)
+
+    def add_unity_session(self, job: Job, session: UnitySession) -> None:
+        job.unity_sessions.append(session)
+        self.save(job)
+
+    def add_unity_turn(self, job: Job, turn: UnityTurn) -> None:
+        job.unity_turns.append(turn)
+        self.save(job)
+
+    def review_unity_turn(
+        self, job: Job, turn_id: str, status: str, note: str = ""
+    ) -> UnityTurn:
+        if status not in {"accepted", "rejected"}:
+            raise ValueError("인간 검토 상태는 accepted 또는 rejected여야 합니다.")
+        turn = next((item for item in job.unity_turns if item.turn_id == turn_id), None)
+        if turn is None:
+            raise ValueError("검토할 Unity 실행을 찾을 수 없습니다.")
+        turn.human_review_status = status
+        turn.human_review_note = note.strip()
+        turn.human_reviewed_at = utc_now()
+        self.set_stage(job, "unity", "completed" if status == "accepted" else "failed")
+        return turn

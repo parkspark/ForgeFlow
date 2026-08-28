@@ -15,8 +15,9 @@ def test_job_creation_and_atomic_json(config, image):
     job = service.create("한글 작업", image, {"seed": 7})
     directory = service.job_directory(job.job_id)
     payload = json.loads((directory / "job.json").read_text(encoding="utf-8"))
-    assert payload["schema_version"] == 2
+    assert payload["schema_version"] == 3
     assert payload["stages"]["rigging"]["status"] == "pending"
+    assert payload["stages"]["unity"]["status"] == "pending"
     assert payload["name"] == "한글 작업"
     assert Path(payload["input_image_path"]).read_bytes() == image.read_bytes()
     assert not (directory / "job.json.tmp").exists()
@@ -30,6 +31,20 @@ def test_restart_recovery_marks_running_failed(config, image):
     recovered = restarted.recover_interrupted()[0]
     assert recovered.stages["modeling"].status == "failed"
     assert "중단" in recovered.stages["modeling"].error
+
+
+def test_restart_recovery_marks_unity_turn_and_session_failed(config, image):
+    from forgeflow.domain.job import UnitySession, UnityTurn
+
+    service = JobService(config.jobs_root)
+    job = service.create("unity recovery", image)
+    job.unity_sessions.append(UnitySession("s", r"C:\Game", status="ready"))
+    job.unity_turns.append(UnityTurn("t", "s", "request", "effective", status="running"))
+    service.set_stage(job, "unity", "running")
+    recovered = JobService(config.jobs_root).recover_interrupted()[0]
+    assert recovered.stages["unity"].status == "failed"
+    assert recovered.latest_unity_turn.status == "failed"
+    assert recovered.latest_unity_session.status == "failed"
 
 
 @pytest.mark.parametrize("suffix", [".gif", ".webp", ".txt"])

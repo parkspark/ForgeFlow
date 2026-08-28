@@ -34,7 +34,8 @@ class ProjectPanel(QWidget):
         selected_row = 0
         for index, job in enumerate(jobs):
             item_text = (f"{job.name}\n{job.job_id}\n모델링 {job.stages['modeling'].status} · "
-                         f"Blender {job.stages['blender'].status} · 리깅 {job.stages['rigging'].status}")
+                         f"Blender {job.stages['blender'].status} · 리깅 {job.stages['rigging'].status} · "
+                         f"Unity {job.stages['unity'].status}")
             self.jobs.addItem(item_text)
             item = self.jobs.item(index)
             item.setData(256, job.job_id)

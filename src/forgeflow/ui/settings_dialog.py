@@ -18,9 +18,12 @@ class SettingsDialog(QDialog):
             "modeling_root": ("modeling_local_mcp 경로", str(config.modeling_root)),
             "blender_agent_root": ("blender-prompt-agent 경로", str(config.blender_agent_root)),
             "blender_mcp_root": ("blender-control-mcp 경로", str(config.blender_mcp_root)),
+            "unity_agent_root": ("unity_local_mcp 경로", str(config.unity_agent_root)),
+            "unity_mcp_root": ("unity_mcp 경로", str(config.unity_mcp_root)),
             "blender_executable": ("Blender 실행 파일", str(config.blender_executable)),
             "jobs_root": ("작업 저장 루트", str(config.jobs_root)),
             "ollama_model": ("Ollama 모델", config.ollama_model),
+            "unity_agent_model": ("Unity Agent 모델", config.unity_agent_model),
             "ollama_base_url": ("Ollama 주소", config.ollama_base_url),
         }
         self.edits = {}
@@ -36,7 +39,9 @@ class SettingsDialog(QDialog):
 
     def value(self, original: AppConfig) -> AppConfig:
         values = {key: edit.text().strip() for key, edit in self.edits.items()}
-        for key in ("modeling_root", "blender_agent_root", "blender_mcp_root", "blender_executable", "jobs_root"):
+        for key in (
+            "modeling_root", "blender_agent_root", "blender_mcp_root",
+            "unity_agent_root", "unity_mcp_root", "blender_executable", "jobs_root",
+        ):
             values[key] = Path(values[key])
         return replace(original, **values)
-

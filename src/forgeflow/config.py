@@ -20,9 +20,12 @@ class AppConfig:
     modeling_root: Path = Path(r"C:\Users\park\Desktop\dev_tool\modeling_local_mcp")
     blender_agent_root: Path = Path(r"C:\Users\park\Desktop\dev_tool\blender-prompt-agent")
     blender_mcp_root: Path = Path(r"C:\Users\park\Desktop\dev_tool\blender-control-mcp")
+    unity_agent_root: Path = Path(r"C:\Users\park\Desktop\dev_tool\unity_local_mcp")
+    unity_mcp_root: Path = Path(r"C:\Users\park\Desktop\dev_tool\unity_mcp")
     blender_executable: Path = _default_blender()
     jobs_root: Path = Path.home() / "Documents" / "ForgeFlow" / "jobs"
     ollama_model: str = "qwen3-coder:30b"
+    unity_agent_model: str = "qwen3.8:27b-mtp-q4_K_M"
     ollama_base_url: str = "http://127.0.0.1:11434"
     theme: str = "dark"
 
@@ -68,7 +71,7 @@ class AppConfig:
         payload = json.loads(selected.read_text(encoding="utf-8"))
         path_fields = {
             "modeling_root", "blender_agent_root", "blender_mcp_root",
-            "blender_executable", "jobs_root",
+            "unity_agent_root", "unity_mcp_root", "blender_executable", "jobs_root",
         }
         values = {key: Path(value) if key in path_fields else value for key, value in payload.items()}
         if values.get("theme", "dark") not in {"light", "dark"}:
@@ -86,6 +89,26 @@ class AppConfig:
                 "BLENDER_MCP_ARGS": json.dumps(["-m", "blender_control_mcp.server"]),
                 "BLENDER_MCP_CWD": str(self.blender_mcp_root),
                 "BLENDER_PROMPT_AGENT_LOG_DIR": str(session_dir),
+                "PYTHONUTF8": "1",
+                "PYTHONIOENCODING": "utf-8",
+            }
+        )
+        return environment
+
+    def unity_environment(self, project_path: Path, session_dir: Path) -> dict[str, str]:
+        """Build an isolated environment for one ForgeFlow-owned Unity session."""
+        project = project_path.expanduser().resolve(strict=False)
+        root = session_dir.expanduser().resolve(strict=False)
+        environment = dict(os.environ)
+        environment.update(
+            {
+                "UNITY_PROJECT_DIR": str(project),
+                "UNITY_MCP_DIR": str(self.unity_mcp_root.resolve(strict=False)),
+                "UNITY_AGENT_RUN_LOG_DIR": str(root / "runs"),
+                "UNITY_MCP_AUDIT_LOG_DIR": str(root / "mcp-audit"),
+                "UNITY_AGENT_RECEIPT_DIR": str(root / "receipts"),
+                "UNITY_AGENT_MODEL": self.unity_agent_model,
+                "UNITY_AGENT_AUTO_OPEN": "0",
                 "PYTHONUTF8": "1",
                 "PYTHONIOENCODING": "utf-8",
             }
