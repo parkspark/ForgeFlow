@@ -33,7 +33,8 @@ class ProjectPanel(QWidget):
         self.jobs.clear()
         selected_row = 0
         for index, job in enumerate(jobs):
-            item_text = f"{job.name}\n{job.job_id}\n모델링 {job.stages['modeling'].status} · Blender {job.stages['blender'].status}"
+            item_text = (f"{job.name}\n{job.job_id}\n모델링 {job.stages['modeling'].status} · "
+                         f"Blender {job.stages['blender'].status} · 리깅 {job.stages['rigging'].status}")
             self.jobs.addItem(item_text)
             item = self.jobs.item(index)
             item.setData(256, job.job_id)
@@ -46,4 +47,3 @@ class ProjectPanel(QWidget):
     def _selected(self, current, _previous) -> None:
         if current:
             self.job_selected.emit(current.data(256))
-

@@ -9,7 +9,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from forgeflow.domain.artifact import Artifact
-from forgeflow.domain.job import BlenderRequest, Job, STATUSES, utc_now
+from forgeflow.domain.job import BlenderRequest, Job, RiggingRequest, STATUSES, utc_now
 
 
 ALLOWED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg"}
@@ -52,7 +52,7 @@ class JobService:
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         job_id = f"job-{timestamp}-{uuid4().hex[:8]}"
         directory = self.job_directory(job_id)
-        for child in ("input", "modeling", "blender", "logs", ".runs"):
+        for child in ("input", "modeling", "blender", "rigging", "logs", ".runs"):
             (directory / child).mkdir(parents=True, exist_ok=False)
         copied = directory / "input" / f"reference{source.suffix.lower()}"
         shutil.copy2(source, copied)
@@ -88,6 +88,8 @@ class JobService:
         job = Job.from_dict(payload)
         if job.job_id != job_id:
             raise ValueError("job.json의 작업 ID가 폴더와 일치하지 않습니다.")
+        if int(payload.get("schema_version", 1)) < job.schema_version:
+            self.save(job)
         return job
 
     def list_jobs(self) -> list[Job]:
@@ -110,6 +112,11 @@ class JobService:
                     stage.completed_at = utc_now()
                     job.errors.append({"stage": name, "message": stage.error, "at": utc_now()})
                     changed = True
+                    if name == "rigging" and job.latest_rigging_request and job.latest_rigging_request.status == "running":
+                        request = job.latest_rigging_request
+                        request.status = "failed"
+                        request.error = stage.error
+                        request.completed_at = stage.completed_at
             if changed:
                 self.save(job)
             recovered.append(job)
@@ -152,3 +159,18 @@ class JobService:
         job.blender_requests.append(request)
         self.save(job)
 
+    def next_rigging_version(self, job: Job) -> int:
+        used = {item.version for item in job.artifacts if item.stage == "rigging" and item.version}
+        used.update(request.version for request in job.rigging_requests)
+        rigging_root = self.job_directory(job.job_id) / "rigging"
+        for directory in rigging_root.glob("v[0-9][0-9][0-9]*"):
+            try:
+                if directory.is_dir() and any(directory.iterdir()):
+                    used.add(int(directory.name[1:]))
+            except (OSError, ValueError):
+                continue
+        return max(used, default=0) + 1
+
+    def add_rigging_request(self, job: Job, request: RiggingRequest) -> None:
+        job.rigging_requests.append(request)
+        self.save(job)

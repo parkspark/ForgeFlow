@@ -26,6 +26,16 @@ class AppConfig:
     ollama_base_url: str = "http://127.0.0.1:11434"
 
     @property
+    def rigging_script(self) -> Path:
+        return self.modeling_root / "scripts" / "rig_humanoid.ps1"
+
+    @property
+    def rigging_staging_root(self) -> Path:
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        root = Path(local_app_data) if local_app_data else Path.home() / "AppData" / "Local"
+        return root / "ForgeFlow" / "rigging-staging"
+
+    @property
     def agent_python(self) -> Path:
         return self.blender_agent_root / ".venv" / "Scripts" / "python.exe"
 

@@ -48,10 +48,24 @@ class ProcessService(QObject):
         self.process.start()
 
     def cancel(self) -> None:
-        if self.running:
-            self.process.terminate()
-            if not self.process.waitForFinished(3000):
-                self.process.kill()
+        if not self.running:
+            return
+        pid = int(self.process.processId())
+        if os.name == "nt" and pid > 0:
+            # Kill only the tree rooted at the QProcess we created.  In particular,
+            # never use wsl --shutdown, which would affect unrelated WSL sessions.
+            result = subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            if result.returncode == 0:
+                if self.process.waitForFinished(5000):
+                    return
+        self.process.terminate()
+        if not self.process.waitForFinished(3000):
+            self.process.kill()
+            self.process.waitForFinished(3000)
 
     def _drain(self, channel: str) -> None:
         raw = self.process.readAllStandardOutput() if channel == "OUT" else self.process.readAllStandardError()
@@ -91,7 +105,24 @@ class SyncProcessRunner:
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
         )
         assert process.stdout is not None
-        for line in process.stdout:
-            if on_line:
-                on_line("OUT", line.rstrip("\r\n"))
-        return process.wait(timeout=timeout)
+        try:
+            for line in process.stdout:
+                if on_line:
+                    on_line("OUT", line.rstrip("\r\n"))
+            return process.wait(timeout=timeout)
+        except BaseException:
+            if process.poll() is None:
+                if os.name == "nt":
+                    subprocess.run(
+                        ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+                        creationflags=subprocess.CREATE_NO_WINDOW,
+                    )
+                else:
+                    process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+            raise

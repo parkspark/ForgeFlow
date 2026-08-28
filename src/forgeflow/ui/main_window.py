@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
 
 from forgeflow.adapters.blender_adapter import BlenderAdapter
 from forgeflow.adapters.modeling_adapter import ModelingAdapter
+from forgeflow.adapters.rigging_adapter import RiggingAdapter
 from forgeflow.config import AppConfig
 from forgeflow.domain.job import Job
 from forgeflow.services.environment_service import EnvironmentWorker
@@ -21,6 +22,7 @@ from .blender_panel import BlenderPanel
 from .log_panel import LogPanel
 from .modeling_panel import ModelingPanel
 from .project_panel import ProjectPanel
+from .rigging_panel import RiggingPanel
 from .settings_dialog import SettingsDialog
 
 
@@ -32,7 +34,8 @@ class MainWindow(QMainWindow):
         self.job_list = self.jobs.recover_interrupted()
         self.current_job: Job | None = None
         self.pipeline = PipelineService(
-            self.jobs, ModelingAdapter(self.config, self.jobs), BlenderAdapter(self.config, self.jobs), self
+            self.jobs, ModelingAdapter(self.config, self.jobs), BlenderAdapter(self.config, self.jobs),
+            RiggingAdapter(self.config, self.jobs), self
         )
         self.environment_worker: EnvironmentWorker | None = None
         self._build_ui()
@@ -50,7 +53,8 @@ class MainWindow(QMainWindow):
         self.environment_labels = {}
         for key, label in (
             ("modeling", "Pixal3D"), ("gpu", "GPU"), ("wsl", "WSL"),
-            ("ollama", "Ollama"), ("mcp", "Blender MCP"), ("blender", "Blender"),
+            ("ollama", "Ollama"), ("mcp", "Blender MCP"), ("unirig", "UniRig"),
+            ("blender", "Blender"),
         ):
             widget = QLabel(f"● {label}: 확인 중")
             self.environment_labels[key] = widget
@@ -68,9 +72,11 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.modeling_panel = ModelingPanel()
         self.blender_panel = BlenderPanel()
+        self.rigging_panel = RiggingPanel()
         self.log_panel = LogPanel()
         self.tabs.addTab(self.modeling_panel, "1. 이미지 → 3D")
         self.tabs.addTab(self.blender_panel, "2. Blender 자연어 편집")
+        self.tabs.addTab(self.rigging_panel, "3. Humanoid 리깅")
         self.tabs.addTab(self.log_panel, "실행 로그")
         splitter.addWidget(self.tabs)
         splitter.setStretchFactor(1, 1)
@@ -101,7 +107,11 @@ class MainWindow(QMainWindow):
         self.blender_panel.approve_requested.connect(self.approve_blender)
         self.blender_panel.deny_requested.connect(self.deny_blender)
         self.blender_panel.open_file_requested.connect(self.open_path)
+        self.rigging_panel.run_requested.connect(self.start_rigging)
+        self.rigging_panel.open_file_requested.connect(self.open_path)
+        self.rigging_panel.open_folder_requested.connect(self.open_path)
         self.pipeline.log_received.connect(self.log_panel.append)
+        self.pipeline.log_received.connect(self.rigging_panel.append_log)
         self.pipeline.job_changed.connect(self._job_changed)
         self.pipeline.inspect_ready.connect(self.blender_panel.set_inspection)
         self.pipeline.plan_ready.connect(lambda _job, _request: self.tabs.setCurrentWidget(self.blender_panel))
@@ -146,6 +156,9 @@ class MainWindow(QMainWindow):
             return
         self.modeling_panel.set_job(self.current_job, self.pipeline.busy)
         self.blender_panel.set_job(self.current_job, self.pipeline.busy)
+        self.rigging_panel.set_job(
+            self.current_job, self.pipeline.rigging.available_inputs(self.current_job), self.pipeline.busy
+        )
         self.cancel_button.setEnabled(self.pipeline.busy)
 
     def start_modeling(self) -> None:
@@ -192,6 +205,29 @@ class MainWindow(QMainWindow):
         if self.current_job:
             self.pipeline.deny(self.current_job)
 
+    def start_rigging(self, selected_input: str, seed: int) -> None:
+        if not self.current_job or self.pipeline.busy:
+            return
+        version = self.jobs.next_rigging_version(self.current_job)
+        output = self.jobs.job_directory(self.current_job.job_id) / "rigging" / f"v{version:03d}"
+        answer = QMessageBox.question(
+            self, "Humanoid 자동 리깅 최종 확인",
+            "사람형 이족보행 입력임을 확인한 뒤 UniRig을 실행합니다.\n\n"
+            f"입력: {Path(selected_input).resolve(strict=False)}\n"
+            f"출력: {output.resolve(strict=False)}\n"
+            f"Seed: {seed}\n\n"
+            "원본 GLB는 변경하지 않으며 PASS는 구조 검증만 의미합니다.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.rigging_panel.clear_log()
+            self.pipeline.start_rigging(self.current_job, selected_input, seed)
+            self.tabs.setCurrentWidget(self.rigging_panel)
+            self._render_job()
+        except Exception as exc:
+            QMessageBox.critical(self, "자동 리깅 시작 실패", str(exc))
+
     def _job_changed(self, job: Job) -> None:
         if self.current_job and self.current_job.job_id == job.job_id:
             self.current_job = job
@@ -205,8 +241,13 @@ class MainWindow(QMainWindow):
             self.current_job = self.jobs.load(self.current_job.job_id)
         self.refresh_jobs()
         self._render_job()
-        if success and operation in {"modeling", "blender_plan", "blender"}:
-            self.tabs.setCurrentWidget(self.blender_panel if operation != "modeling" else self.modeling_panel)
+        if success and operation in {"modeling", "blender_plan", "blender", "rigging"}:
+            if operation == "modeling":
+                self.tabs.setCurrentWidget(self.modeling_panel)
+            elif operation == "rigging":
+                self.tabs.setCurrentWidget(self.rigging_panel)
+            else:
+                self.tabs.setCurrentWidget(self.blender_panel)
         if not success and operation not in {"blender_plan"}:
             QMessageBox.warning(self, "실행 결과", message)
 
@@ -231,7 +272,8 @@ class MainWindow(QMainWindow):
         self.environment_worker.start()
 
     def _environment_ready(self, checks: dict) -> None:
-        names = {"modeling": "Pixal3D", "gpu": "GPU", "wsl": "WSL", "ollama": "Ollama", "mcp": "Blender MCP", "blender": "Blender"}
+        names = {"modeling": "Pixal3D", "gpu": "GPU", "wsl": "WSL", "ollama": "Ollama",
+                 "mcp": "Blender MCP", "unirig": "UniRig", "blender": "Blender"}
         for key, label in self.environment_labels.items():
             check = checks.get(key, {"ok": False, "detail": "점검 결과 없음"})
             label.setText(f"{'●' if check['ok'] else '○'} {names[key]}: {'연결됨' if check['ok'] else '실패'}")
@@ -256,4 +298,3 @@ class MainWindow(QMainWindow):
             self.environment_worker.requestInterruption()
             self.environment_worker.wait(2000)
         event.accept()
-

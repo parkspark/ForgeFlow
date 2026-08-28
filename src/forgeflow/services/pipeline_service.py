@@ -9,6 +9,7 @@ from PySide6.QtCore import QObject, Signal
 
 from forgeflow.adapters.blender_adapter import BlenderAdapter
 from forgeflow.adapters.modeling_adapter import ModelingAdapter, ProcessCommand
+from forgeflow.adapters.rigging_adapter import RiggingAdapter, RiggingRun
 from forgeflow.domain.artifact import Artifact
 from forgeflow.domain.job import BlenderRequest, Job, utc_now
 
@@ -24,11 +25,13 @@ class PipelineService(QObject):
     inspect_ready = Signal(object)
     operation_finished = Signal(str, bool, str)
 
-    def __init__(self, jobs: JobService, modeling: ModelingAdapter, blender: BlenderAdapter, parent: QObject | None = None):
+    def __init__(self, jobs: JobService, modeling: ModelingAdapter, blender: BlenderAdapter,
+                 rigging: RiggingAdapter, parent: QObject | None = None):
         super().__init__(parent)
         self.jobs = jobs
         self.modeling = modeling
         self.blender = blender
+        self.rigging = rigging
         self.process = ProcessService(self)
         self.process.line_received.connect(self._on_line)
         self.process.finished.connect(self._on_finished)
@@ -39,6 +42,7 @@ class PipelineService(QObject):
         self._log_path: Path | None = None
         self._json_events: list[dict[str, Any]] = []
         self._cancelled = False
+        self._rigging_preview_warnings: list[str] = []
 
     @property
     def busy(self) -> bool:
@@ -167,6 +171,96 @@ class PipelineService(QObject):
             self.job_changed.emit(job)
             self.operation_finished.emit("blender_plan", False, "사용자가 실행 계획을 취소했습니다.")
 
+    def start_rigging(self, job: Job, selected_input: str | Path | None = None, seed: int | str = 12345) -> None:
+        if self.busy:
+            raise RuntimeError("다른 작업이 실행 중입니다.")
+        command, run = self.rigging.build_rigging(job, selected_input, seed)
+        request = run.request
+        request.status = "running"
+        request.started_at = utc_now()
+        job.rigging_input_path = request.input_path
+        self.jobs.add_rigging_request(job, request)
+        log_path = run.final_directory / "rigging.log"
+        self.jobs.set_stage(job, "rigging", "running", log_path=log_path)
+        release = self.modeling.build_release_ollama()
+        if release is not None:
+            self._begin(
+                job, "rigging_vram", release, log_path,
+                lambda _code: self._begin(
+                    job, "rigging", command, log_path,
+                    lambda code: self._rigging_finished(job, run, code),
+                ),
+            )
+        else:
+            self._begin(job, "rigging", command, log_path, lambda code: self._rigging_finished(job, run, code))
+
+    def _rigging_finished(self, job: Job, run: RiggingRun, exit_code: int) -> None:
+        if exit_code != 0:
+            integrity = ""
+            source = Path(run.request.input_path)
+            if source.is_file() and sha256_file(source) != run.request.input_sha256:
+                integrity = " 입력 원본 GLB 해시도 변경되었습니다."
+            self._fail_rigging(job, run, f"UniRig 프로세스가 종료 코드 {exit_code}로 실패했습니다.{integrity}")
+            return
+        try:
+            artifacts, _report = self.rigging.collect_rigging(run)
+            self.rigging.register_success(job, run, artifacts)
+            self.jobs.set_stage(job, "rigging", "completed")
+            self._rigging_preview_warnings = []
+            self._start_rigging_preview(job, run, pose=False)
+        except Exception as exc:
+            self._fail_rigging(job, run, str(exc))
+
+    def _start_rigging_preview(self, job: Job, run: RiggingRun, pose: bool) -> None:
+        try:
+            command, output, kind = self.rigging.build_preview(run, pose)
+            label = "pose" if pose else "rest"
+            self._begin(
+                job, f"rigging_preview_{label}", command,
+                Path(run.request.output_directory) / "rigging.log",
+                lambda code: self._rigging_preview_finished(job, run, output, kind, pose, code),
+            )
+        except Exception as exc:
+            self._rigging_preview_warnings.append(str(exc))
+            if not pose:
+                self._start_rigging_preview(job, run, pose=True)
+            else:
+                self._finish_rigging_previews(job, run)
+
+    def _rigging_preview_finished(
+        self, job: Job, run: RiggingRun, output: Path, kind: str, pose: bool, exit_code: int
+    ) -> None:
+        if exit_code != 0:
+            self._rigging_preview_warnings.append(
+                f"{kind} 생성이 종료 코드 {exit_code}로 실패했습니다."
+            )
+        else:
+            try:
+                self.jobs.add_artifact(job, self.rigging.collect_preview(run, output, kind))
+            except Exception as exc:
+                self._rigging_preview_warnings.append(f"{kind}: {exc}")
+        if not pose:
+            self._start_rigging_preview(job, run, pose=True)
+        else:
+            self._finish_rigging_previews(job, run)
+
+    def _finish_rigging_previews(self, job: Job, run: RiggingRun) -> None:
+        warning = " ".join(self._rigging_preview_warnings) or None
+        run.request.preview_warning = warning
+        self.jobs.save(job)
+        self.job_changed.emit(job)
+        message = f"Humanoid 리깅 v{run.request.version:03d} 구조 검증을 통과했습니다."
+        if warning:
+            message += f" 미리보기 경고: {warning}"
+        self.operation_finished.emit("rigging", True, message)
+
+    def _fail_rigging(self, job: Job, run: RiggingRun, message: str) -> None:
+        run.request.status = "failed"
+        run.request.error = message
+        run.request.completed_at = utc_now()
+        self.jobs.save(job)
+        self._fail_stage(job, "rigging", message)
+
     def cancel_active(self) -> None:
         if not self.process.running:
             return
@@ -209,8 +303,25 @@ class PipelineService(QObject):
         handler, self._handler = self._handler, None
         if self._cancelled:
             job = self._active_job
-            if job and self._operation in {"modeling", "modeling_preview", "blender"}:
-                stage = "modeling" if self._operation.startswith("modeling") else "blender"
+            if job and self._operation.startswith("rigging_preview"):
+                request = job.latest_rigging_request
+                if request:
+                    request.preview_warning = "사용자가 미리보기 생성을 취소했습니다. 리그 구조 결과는 유효합니다."
+                    self.jobs.save(job)
+                self.operation_finished.emit("rigging", True, request.preview_warning if request else "미리보기 취소")
+                return
+            if job and self._operation in {"modeling", "modeling_preview", "blender", "rigging", "rigging_vram"}:
+                if self._operation.startswith("modeling"):
+                    stage = "modeling"
+                elif self._operation.startswith("rigging"):
+                    stage = "rigging"
+                    request = job.latest_rigging_request
+                    if request:
+                        request.status = "cancelled"
+                        request.error = "사용자가 실행을 취소했습니다."
+                        request.completed_at = utc_now()
+                else:
+                    stage = "blender"
                 self.jobs.set_stage(job, stage, "cancelled", error="사용자가 실행을 취소했습니다.")
                 self.job_changed.emit(job)
             self.operation_finished.emit(self._operation, False, "실행을 취소했습니다.")
@@ -221,8 +332,18 @@ class PipelineService(QObject):
     def _on_start_error(self, message: str) -> None:
         handler, self._handler = self._handler, None
         job = self._active_job
-        if job and self._operation in {"modeling", "modeling_preview", "blender"}:
-            stage = "modeling" if self._operation.startswith("modeling") else "blender"
+        if job and self._operation in {"modeling", "modeling_preview", "blender", "rigging", "rigging_vram"}:
+            if self._operation.startswith("modeling"):
+                stage = "modeling"
+            elif self._operation.startswith("rigging"):
+                stage = "rigging"
+                request = job.latest_rigging_request
+                if request:
+                    request.status = "failed"
+                    request.error = f"프로세스를 시작할 수 없습니다: {message}"
+                    request.completed_at = utc_now()
+            else:
+                stage = "blender"
             self._fail_stage(job, stage, f"프로세스를 시작할 수 없습니다: {message}")
         else:
             self.operation_finished.emit(self._operation, False, message)

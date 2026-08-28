@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import sys
+import os
+import time
+import ctypes
 from pathlib import Path
 
 from forgeflow.adapters.modeling_adapter import ProcessCommand
-from forgeflow.services.process_service import SyncProcessRunner
+from PySide6.QtCore import QCoreApplication
+
+from forgeflow.services.process_service import ProcessService, SyncProcessRunner
 
 
 def test_external_process_failure_is_preserved(tmp_path: Path):
@@ -16,3 +21,40 @@ def test_external_process_failure_is_preserved(tmp_path: Path):
     assert code == 7
     assert lines == [("OUT", "engine failed")]
 
+
+def test_cancel_terminates_only_started_windows_process_tree(tmp_path: Path):
+    if os.name != "nt":
+        return
+    app = QCoreApplication.instance() or QCoreApplication([])
+    child_pid_file = tmp_path / "child.pid"
+    child_code = "import time; time.sleep(120)"
+    parent_code = (
+        "import subprocess,sys,time,pathlib; "
+        f"p=subprocess.Popen([sys.executable,'-c',{child_code!r}]); "
+        f"pathlib.Path({str(child_pid_file)!r}).write_text(str(p.pid)); time.sleep(120)"
+    )
+    service = ProcessService()
+    service.start(ProcessCommand(sys.executable, ["-c", parent_code], tmp_path))
+    assert service.process.waitForStarted(5000)
+    deadline = time.monotonic() + 5
+    while not child_pid_file.is_file() and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.02)
+    assert child_pid_file.is_file()
+    parent_pid = int(service.process.processId())
+    child_pid = int(child_pid_file.read_text())
+    service.cancel()
+    app.processEvents()
+
+    def alive(pid: int) -> bool:
+        handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+        if handle:
+            ctypes.windll.kernel32.CloseHandle(handle)
+            return True
+        return False
+
+    deadline = time.monotonic() + 5
+    while (alive(parent_pid) or alive(child_pid)) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not alive(parent_pid)
+    assert not alive(child_pid)

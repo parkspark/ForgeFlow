@@ -37,6 +37,7 @@ class EnvironmentWorker(QThread):
         checks["wsl"] = self._command_check(
             [shutil.which("wsl") or "wsl.exe", "-d", "Ubuntu-24.04", "-u", "park", "--", "printf", "ready"], 20
         )
+        checks["unirig"] = self._unirig_check()
         checks["ollama"] = self._ollama_check()
         if checks["agent"]["ok"] and checks["mcp_project"]["ok"]:
             try:
@@ -55,6 +56,50 @@ class EnvironmentWorker(QThread):
         else:
             checks["mcp"] = {"ok": False, "detail": "에이전트/MCP 환경 필요"}
         self.completed.emit(checks)
+
+    def _unirig_check(self) -> dict[str, Any]:
+        required_commit = "6793c6640ff01c8fb389f3993434124bb43d2933"
+        script = self.config.rigging_script.resolve(strict=False)
+        missing: list[str] = []
+        if not script.is_file():
+            missing.append(f"rig_humanoid.ps1: {script}")
+        wsl = shutil.which("wsl") or shutil.which("wsl.exe")
+        if not wsl:
+            missing.append("wsl.exe")
+            return {"ok": False, "detail": "누락: " + ", ".join(missing)}
+        command = (
+            "set -e; "
+            "test -x /home/park/miniforge3/envs/unirig/bin/python; "
+            "test -d /home/park/local-modeling/UniRig; "
+            "test -f /home/park/local-modeling/UniRig/src/model/sdpa_mha.py; "
+            "test -d /home/park/.cache/huggingface/hub/models--VAST-AI--UniRig; "
+            "git -C /home/park/local-modeling/UniRig rev-parse HEAD"
+        )
+        try:
+            result = subprocess.run(
+                [wsl, "-d", "Ubuntu-24.04", "-u", "park", "--", "bash", "-lc", command],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                encoding="utf-8", errors="replace", timeout=30, check=False,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            )
+            lines = [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
+            commit = lines[-1] if result.returncode == 0 and lines else None
+            if result.returncode != 0:
+                missing.append(
+                    "Ubuntu-24.04/park UniRig Python, repository, sdpa_mha.py 또는 checkpoint cache"
+                )
+            detail = "모든 필수 항목 확인"
+            if missing:
+                detail = "누락/접근 실패: " + "; ".join(missing)
+            elif commit != required_commit:
+                detail = f"실행 가능 · commit 경고: 실제 {commit}, 확인 기준 {required_commit}"
+            else:
+                detail = f"실행 가능 · commit {commit}"
+            return {"ok": not missing, "detail": detail, "commit": commit,
+                    "warning": bool(commit and commit != required_commit)}
+        except Exception as exc:
+            missing.append(str(exc))
+            return {"ok": False, "detail": "누락/접근 실패: " + "; ".join(missing)}
 
     @staticmethod
     def _path_check(path: Path, label: str) -> dict[str, Any]:
@@ -82,4 +127,3 @@ class EnvironmentWorker(QThread):
             return {"ok": ok, "detail": self.config.ollama_model if ok else f"모델 없음: {self.config.ollama_model}"}
         except Exception as exc:
             return {"ok": False, "detail": str(exc)}
-
