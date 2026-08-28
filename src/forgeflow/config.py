@@ -24,6 +24,7 @@ class AppConfig:
     jobs_root: Path = Path.home() / "Documents" / "ForgeFlow" / "jobs"
     ollama_model: str = "qwen3-coder:30b"
     ollama_base_url: str = "http://127.0.0.1:11434"
+    theme: str = "dark"
 
     @property
     def rigging_script(self) -> Path:
@@ -70,6 +71,8 @@ class AppConfig:
             "blender_executable", "jobs_root",
         }
         values = {key: Path(value) if key in path_fields else value for key, value in payload.items()}
+        if values.get("theme", "dark") not in {"light", "dark"}:
+            values["theme"] = "dark"
         return cls(**values)
 
     def agent_environment(self, session_dir: Path) -> dict[str, str]:

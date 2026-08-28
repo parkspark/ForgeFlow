@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QFileDialog, QGroupBox, QHBoxLayout, QInputDialog, QLabel, QMainWindow,
-    QMessageBox, QPushButton, QSplitter, QTabWidget, QVBoxLayout, QWidget,
+    QComboBox, QFileDialog, QGroupBox, QHBoxLayout, QInputDialog, QLabel,
+    QMainWindow, QMessageBox, QPushButton, QSplitter, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from forgeflow.adapters.blender_adapter import BlenderAdapter
@@ -24,6 +25,7 @@ from .modeling_panel import ModelingPanel
 from .project_panel import ProjectPanel
 from .rigging_panel import RiggingPanel
 from .settings_dialog import SettingsDialog
+from .theme import build_stylesheet, normalize_theme
 
 
 class MainWindow(QMainWindow):
@@ -57,8 +59,18 @@ class MainWindow(QMainWindow):
             ("blender", "Blender"),
         ):
             widget = QLabel(f"● {label}: 확인 중")
+            widget.setProperty("envState", "checking")
             self.environment_labels[key] = widget
             env_layout.addWidget(widget)
+        env_layout.addStretch()
+        env_layout.addWidget(QLabel("테마"))
+        self.theme_selector = QComboBox()
+        self.theme_selector.setMinimumWidth(92)
+        self.theme_selector.addItem("다크", "dark")
+        self.theme_selector.addItem("라이트", "light")
+        selected_theme = normalize_theme(self.config.theme)
+        self.theme_selector.setCurrentIndex(self.theme_selector.findData(selected_theme))
+        env_layout.addWidget(self.theme_selector)
         self.refresh_environment_button = QPushButton("새로고침")
         self.cancel_button = QPushButton("실행 취소")
         self.cancel_button.setEnabled(False)
@@ -83,16 +95,7 @@ class MainWindow(QMainWindow):
         root.addWidget(splitter, 1)
         self.setCentralWidget(central)
         self.statusBar().showMessage("준비됨")
-        self.setStyleSheet(
-            "QMainWindow,QWidget{background:#0b1220;color:#e5e7eb;font-size:13px;}"
-            "QLineEdit,QPlainTextEdit,QListWidget{background:#111827;border:1px solid #334155;border-radius:6px;padding:6px;}"
-            "QPushButton{background:#2563eb;border:0;border-radius:6px;padding:8px 12px;}"
-            "QPushButton:disabled{background:#334155;color:#64748b;} QPushButton:hover{background:#1d4ed8;}"
-            "QGroupBox{border:1px solid #334155;border-radius:8px;margin-top:8px;padding-top:10px;}"
-            "QGroupBox::title{subcontrol-origin:margin;left:12px;padding:0 5px;}"
-            "QLabel#title{font-size:26px;font-weight:700;color:#60a5fa;}"
-            "QTabBar::tab{background:#172033;padding:10px 16px;} QTabBar::tab:selected{background:#2563eb;}"
-        )
+        self._apply_theme(selected_theme)
 
     def _connect(self) -> None:
         self.project_panel.new_requested.connect(self.create_job)
@@ -118,6 +121,24 @@ class MainWindow(QMainWindow):
         self.pipeline.operation_finished.connect(self._operation_finished)
         self.refresh_environment_button.clicked.connect(self.refresh_environment)
         self.cancel_button.clicked.connect(self.pipeline.cancel_active)
+        self.theme_selector.currentIndexChanged.connect(self._theme_changed)
+
+    def _apply_theme(self, name: str) -> None:
+        self.setStyleSheet(build_stylesheet(name))
+
+    def _theme_changed(self, index: int) -> None:
+        name = normalize_theme(str(self.theme_selector.itemData(index)))
+        self._apply_theme(name)
+        if name == self.config.theme:
+            return
+        self.config = replace(self.config, theme=name)
+        try:
+            self.config.save()
+            self.statusBar().showMessage(
+                f"{'라이트' if name == 'light' else '다크'} 테마를 적용하고 저장했습니다.", 5000
+            )
+        except OSError as exc:
+            self.statusBar().showMessage(f"테마 설정을 저장하지 못했습니다: {exc}", 10000)
 
     def refresh_jobs(self) -> None:
         selected = self.current_job.job_id if self.current_job else None
@@ -266,6 +287,8 @@ class MainWindow(QMainWindow):
         self.refresh_environment_button.setEnabled(False)
         for label in self.environment_labels.values():
             label.setText(label.text().split(":")[0] + ": 확인 중")
+            label.setProperty("envState", "checking")
+            self._refresh_widget_style(label)
         self.environment_worker = EnvironmentWorker(self.config, self)
         self.environment_worker.completed.connect(self._environment_ready)
         self.environment_worker.finished.connect(lambda: self.refresh_environment_button.setEnabled(True))
@@ -278,7 +301,14 @@ class MainWindow(QMainWindow):
             check = checks.get(key, {"ok": False, "detail": "점검 결과 없음"})
             label.setText(f"{'●' if check['ok'] else '○'} {names[key]}: {'연결됨' if check['ok'] else '실패'}")
             label.setToolTip(str(check["detail"]))
-            label.setStyleSheet("color:#34d399" if check["ok"] else "color:#f87171")
+            label.setProperty("envState", "ok" if check["ok"] else "error")
+            self._refresh_widget_style(label)
+
+    @staticmethod
+    def _refresh_widget_style(widget: QWidget) -> None:
+        widget.style().unpolish(widget)
+        widget.style().polish(widget)
+        widget.update()
 
     def edit_settings(self) -> None:
         dialog = SettingsDialog(self.config, self)

@@ -25,7 +25,7 @@ class ModelingPanel(QWidget):
         self.preview = QLabel("입력 이미지 미리보기")
         self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview.setMinimumSize(320, 280)
-        self.preview.setStyleSheet("background:#172033;border:1px solid #334155;border-radius:8px")
+        self.preview.setObjectName("previewFrame")
         splitter.addWidget(self.preview)
         right = QWidget()
         right_layout = QVBoxLayout(right)

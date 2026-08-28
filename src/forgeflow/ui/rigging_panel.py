@@ -26,7 +26,7 @@ class RiggingPanel(QWidget):
             "PASS는 본/웨이트/파일 구조 검증 통과이며 애니메이션·육안 품질 보장이 아닙니다."
         )
         guidance.setWordWrap(True)
-        guidance.setStyleSheet("color:#fbbf24")
+        guidance.setObjectName("guidance")
         layout.addWidget(guidance)
 
         input_box = QGroupBox("리깅 입력 — 이 작업에 등록된 GLB만 선택 가능")
@@ -108,7 +108,7 @@ class RiggingPanel(QWidget):
         label = QLabel(text)
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         label.setMinimumSize(260, 220)
-        label.setStyleSheet("background:#172033;border:1px solid #334155;border-radius:8px")
+        label.setObjectName("previewFrame")
         return label
 
     def _input_changed(self) -> None:
