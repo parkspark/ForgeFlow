@@ -172,13 +172,30 @@ class JobService:
         job.current_stage = stage_name
         self.save(job)
 
-    def add_artifact(self, job: Job, artifact: Artifact) -> None:
-        resolved = str(Path(artifact.path).resolve(strict=False))
-        if any(Path(item.path).resolve(strict=False) == Path(resolved) for item in job.artifacts):
-            return
-        artifact.path = resolved
-        job.artifacts.append(artifact)
-        self.save(job)
+    def add_artifact(self, job: Job, artifact: Artifact, *, save: bool = True) -> bool:
+        return bool(self.add_artifacts(job, [artifact], save=save))
+
+    def add_artifacts(
+        self, job: Job, artifacts: list[Artifact], *, save: bool = True
+    ) -> int:
+        """Register multiple artifacts with at most one durable job write."""
+        existing = {
+            os.path.normcase(str(Path(item.path).resolve(strict=False)))
+            for item in job.artifacts
+        }
+        added = 0
+        for artifact in artifacts:
+            resolved = str(Path(artifact.path).resolve(strict=False))
+            key = os.path.normcase(resolved)
+            if key in existing:
+                continue
+            artifact.path = resolved
+            job.artifacts.append(artifact)
+            existing.add(key)
+            added += 1
+        if added and save:
+            self.save(job)
+        return added
 
     def next_blender_version(self, job: Job) -> int:
         used = {item.version for item in job.artifacts if item.stage == "blender" and item.version}

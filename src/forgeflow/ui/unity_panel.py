@@ -8,7 +8,7 @@ from PySide6.QtGui import QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QFileDialog, QFormLayout, QFrame, QGridLayout,
     QGroupBox, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton,
-    QScrollArea, QSplitter, QTextEdit, QVBoxLayout, QWidget,
+    QScrollArea, QSizePolicy, QSplitter, QTextEdit, QVBoxLayout, QWidget,
 )
 
 from forgeflow.domain.job import Job, UnitySession, UnityTurn
@@ -139,6 +139,7 @@ class UnityPanel(QWidget):
         self.sidebar_scroll.setMaximumWidth(460)
         sidebar_body = QWidget()
         sidebar_body.setObjectName("unitySidebarBody")
+        sidebar_body.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         sidebar_layout = QVBoxLayout(sidebar_body)
         sidebar_layout.setContentsMargins(4, 0, 4, 4)
         sidebar_layout.setSpacing(10)
@@ -180,7 +181,7 @@ class UnityPanel(QWidget):
         self.bridge_status = QLabel("Editor Bridge: 확인 전")
         self.identity_status = QLabel("실제 프로젝트 identity: 확인 전")
         for widget in (self.agent_status, self.mcp_status, self.bridge_status, self.identity_status):
-            widget.setWordWrap(True)
+            self._make_wrapping_label_shrinkable(widget)
             widget.setProperty("connectionState", "idle")
             connection_layout.addWidget(widget)
         self.restart_notice = QLabel(
@@ -188,7 +189,7 @@ class UnityPanel(QWidget):
             "모델의 내부 대화 컨텍스트는 초기화되었습니다."
         )
         self.restart_notice.setObjectName("guidance")
-        self.restart_notice.setWordWrap(True)
+        self._make_wrapping_label_shrinkable(self.restart_notice)
         connection_layout.addWidget(self.restart_notice)
         sidebar_layout.addWidget(connection)
 
@@ -199,13 +200,13 @@ class UnityPanel(QWidget):
         job_caption.setProperty("sectionCaption", True)
         context_layout.addWidget(job_caption)
         self.job_label = QLabel("선택된 Job 없음")
-        self.job_label.setWordWrap(True)
+        self._make_wrapping_label_shrinkable(self.job_label)
         context_layout.addWidget(self.job_label)
         fbx_caption = QLabel("Humanoid FBX")
         fbx_caption.setProperty("sectionCaption", True)
         context_layout.addWidget(fbx_caption)
         self.fbx_label = QLabel("없음 — FBX 없이도 Unity 채팅을 사용할 수 있습니다.")
-        self.fbx_label.setWordWrap(True)
+        self._make_wrapping_label_shrinkable(self.fbx_label)
         self.fbx_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         context_layout.addWidget(self.fbx_label)
         self.import_button = QPushButton("Unity 프로젝트로 가져오기")
@@ -215,7 +216,7 @@ class UnityPanel(QWidget):
         asset_caption.setProperty("sectionCaption", True)
         context_layout.addWidget(asset_caption)
         self.asset_label = QLabel("가져온 Asset 없음")
-        self.asset_label.setWordWrap(True)
+        self._make_wrapping_label_shrinkable(self.asset_label)
         self.asset_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         context_layout.addWidget(self.asset_label)
         sidebar_layout.addWidget(context)
@@ -227,7 +228,7 @@ class UnityPanel(QWidget):
         self.automated_result = QLabel("Automated verification: unavailable")
         self.human_result = QLabel("Human review: pending")
         for result_label in (self.execution_result, self.automated_result, self.human_result):
-            result_label.setWordWrap(True)
+            self._make_wrapping_label_shrinkable(result_label)
         self.checks = QPlainTextEdit()
         self.checks.setReadOnly(True)
         self.checks.setMaximumHeight(130)
@@ -246,7 +247,7 @@ class UnityPanel(QWidget):
             "Unity Play Mode에서 입력·애니메이션·카메라·물리·타이밍을 직접 확인한 뒤 승인하세요."
         )
         guidance.setObjectName("guidance")
-        guidance.setWordWrap(True)
+        self._make_wrapping_label_shrinkable(guidance)
         sidebar_layout.addWidget(guidance)
 
         actions = QGridLayout()
@@ -287,6 +288,13 @@ class UnityPanel(QWidget):
         self.main_splitter.setSizes([820, 380])
         root.addWidget(self.main_splitter, 1)
         self.set_session(None)
+
+    @staticmethod
+    def _make_wrapping_label_shrinkable(label: QLabel) -> None:
+        """Let long, unbroken paths wrap inside the narrow sidebar."""
+        label.setWordWrap(True)
+        label.setMinimumWidth(0)
+        label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
 
     def _toggle_sidebar(self, hidden: bool) -> None:
         self.sidebar_scroll.setVisible(not hidden)

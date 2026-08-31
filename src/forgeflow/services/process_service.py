@@ -7,7 +7,10 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, Signal
 
-from forgeflow.adapters.modeling_adapter import ProcessCommand
+from forgeflow.domain.process import ProcessCommand
+from forgeflow.services.process_control import (
+    terminate_process_tree, terminate_windows_process_tree,
+)
 
 
 class ProcessService(QObject):
@@ -54,12 +57,7 @@ class ProcessService(QObject):
         if os.name == "nt" and pid > 0:
             # Kill only the tree rooted at the QProcess we created.  In particular,
             # never use wsl --shutdown, which would affect unrelated WSL sessions.
-            result = subprocess.run(
-                ["taskkill", "/PID", str(pid), "/T", "/F"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
-            if result.returncode == 0:
+            if terminate_windows_process_tree(pid):
                 if self.process.waitForFinished(5000):
                     return
         self.process.terminate()
@@ -112,17 +110,5 @@ class SyncProcessRunner:
             return process.wait(timeout=timeout)
         except BaseException:
             if process.poll() is None:
-                if os.name == "nt":
-                    subprocess.run(
-                        ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
-                        creationflags=subprocess.CREATE_NO_WINDOW,
-                    )
-                else:
-                    process.terminate()
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait(timeout=5)
+                terminate_process_tree(process)
             raise

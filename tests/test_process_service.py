@@ -9,6 +9,8 @@ from pathlib import Path
 from forgeflow.adapters.modeling_adapter import ProcessCommand
 from PySide6.QtCore import QCoreApplication
 
+from forgeflow.services.job_service import JobService
+from forgeflow.services.pipeline_service import PipelineService
 from forgeflow.services.process_service import ProcessService, SyncProcessRunner
 
 
@@ -20,6 +22,23 @@ def test_external_process_failure_is_preserved(tmp_path: Path):
     )
     assert code == 7
     assert lines == [("OUT", "engine failed")]
+
+
+def test_pipeline_reuses_one_buffered_log_handle(tmp_path: Path):
+    service = PipelineService(JobService(tmp_path / "jobs"), None, None, None)  # type: ignore[arg-type]
+    log_path = tmp_path / "pipeline.log"
+    service._prepare_log(log_path)
+    handle = service._log_handle
+    for index in range(130):
+        service._on_line("OUT", f"line-{index}")
+    service._prepare_log(log_path)
+    assert service._log_handle is handle
+    service._close_log()
+
+    lines = log_path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 130
+    assert lines[0] == "[OUT] line-0"
+    assert lines[-1] == "[OUT] line-129"
 
 
 def test_cancel_terminates_only_started_windows_process_tree(tmp_path: Path):

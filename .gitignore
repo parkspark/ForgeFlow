@@ -25,6 +25,8 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
+docs/architecture
+docs/presentation
 
 # Virtual environments
 .env
@@ -67,3 +69,7 @@ jobs/
 logs/
 .runs/
 *.log
+
+backup/
+
+.tmp/

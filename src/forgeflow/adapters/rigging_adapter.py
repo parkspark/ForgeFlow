@@ -11,9 +11,11 @@ from typing import Any
 from forgeflow.config import AppConfig
 from forgeflow.domain.artifact import Artifact
 from forgeflow.domain.job import Job, RiggingRequest, utc_now
+from forgeflow.domain.process import ProcessCommand
 from forgeflow.services.job_service import JobService, sha256_file
+from forgeflow.services.path_utils import same_path
 
-from .modeling_adapter import ModelingAdapter, ProcessCommand
+from .modeling_adapter import ModelingAdapter
 
 
 RIGGING_KINDS = {
@@ -182,10 +184,6 @@ class RiggingAdapter:
     def expected_paths(directory: Path, safe_name: str) -> dict[str, Path]:
         return {kind: directory / pattern.format(name=safe_name) for kind, pattern in RIGGING_KINDS.items()}
 
-    @staticmethod
-    def _same_path(left: str | Path, right: Path) -> bool:
-        return os.path.normcase(str(Path(left).resolve(strict=False))) == os.path.normcase(str(right.resolve(strict=False)))
-
     def validate_report(self, report_path: Path, expected: dict[str, Path]) -> dict[str, Any]:
         try:
             report = json.loads(report_path.read_text(encoding="utf-8"))
@@ -212,7 +210,7 @@ class RiggingAdapter:
             failures.append(f"max_influences={influences!r} (허용 1~4)")
         for key, kind in (("fbx", "humanoid_fbx"), ("blend", "humanoid_blend")):
             value = report.get(key)
-            if not isinstance(value, str) or not self._same_path(value, expected[kind]):
+            if not isinstance(value, str) or not same_path(value, expected[kind]):
                 failures.append(f"report.{key} 경로가 실제 결과와 다릅니다")
         if failures:
             raise RuntimeError("Humanoid 구조 검증 실패: " + "; ".join(failures))
@@ -282,16 +280,18 @@ class RiggingAdapter:
             ),
         )
 
-    def register_success(self, job: Job, run: RiggingRun, artifacts: list[Artifact]) -> None:
+    def register_success(
+        self, job: Job, run: RiggingRun, artifacts: list[Artifact], *, save: bool = True
+    ) -> None:
         kinds = {item.kind for item in artifacts}
         missing = set(RIGGING_KINDS) - kinds
         if missing:
             raise RuntimeError("등록할 리깅 산출물이 부족합니다: " + ", ".join(sorted(missing)))
-        for artifact in artifacts:
-            self.jobs.add_artifact(job, artifact)
+        self.jobs.add_artifacts(job, artifacts, save=False)
         paths = self.expected_paths(run.final_directory, run.request.safe_name)
         job.rigging_input_path = str(run.input_path)
         job.humanoid_fbx_path = str(paths["humanoid_fbx"].resolve())
         job.humanoid_blend_path = str(paths["humanoid_blend"].resolve())
         job.unity_input_path = job.humanoid_fbx_path
-        self.jobs.save(job)
+        if save:
+            self.jobs.save(job)

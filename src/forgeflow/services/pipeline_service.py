@@ -3,15 +3,16 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 from PySide6.QtCore import QObject, Signal
 
 from forgeflow.adapters.blender_adapter import BlenderAdapter
-from forgeflow.adapters.modeling_adapter import ModelingAdapter, ProcessCommand
+from forgeflow.adapters.modeling_adapter import ModelingAdapter
 from forgeflow.adapters.rigging_adapter import RiggingAdapter, RiggingRun
 from forgeflow.domain.artifact import Artifact
 from forgeflow.domain.job import BlenderRequest, Job, utc_now
+from forgeflow.domain.process import ProcessCommand
 
 from .job_service import JobService, sha256_file
 from .process_service import ProcessService
@@ -40,6 +41,8 @@ class PipelineService(QObject):
         self._active_job: Job | None = None
         self._operation = ""
         self._log_path: Path | None = None
+        self._log_handle: TextIO | None = None
+        self._log_lines_since_flush = 0
         self._json_events: list[dict[str, Any]] = []
         self._cancelled = False
         self._rigging_preview_warnings: list[str] = []
@@ -66,8 +69,7 @@ class PipelineService(QObject):
             return
         try:
             artifacts = self.modeling.collect_generation(job, run_root)
-            for artifact in artifacts:
-                self.jobs.add_artifact(job, artifact)
+            self.jobs.add_artifacts(job, artifacts, save=False)
             job.blender_input_path = next(item.path for item in artifacts if item.kind == "glb")
             self.jobs.save(job)
             command, preview = self.modeling.build_preview(job)
@@ -83,6 +85,7 @@ class PipelineService(QObject):
             self.jobs.add_artifact(
                 job,
                 Artifact("preview", str(preview.resolve()), "modeling", utc_now(), sha256=sha256_file(preview)),
+                save=False,
             )
             self.jobs.set_stage(job, "modeling", "completed")
             self.job_changed.emit(job)
@@ -151,8 +154,7 @@ class PipelineService(QObject):
             return
         try:
             artifacts = self.blender.collect_execution(request, execution, original_hash)
-            for artifact in artifacts:
-                self.jobs.add_artifact(job, artifact)
+            self.jobs.add_artifacts(job, artifacts, save=False)
             glb = next(item.path for item in artifacts if item.kind == "glb")
             job.blender_input_path = glb
             self.jobs.set_stage(job, "blender", "completed")
@@ -204,7 +206,7 @@ class PipelineService(QObject):
             return
         try:
             artifacts, _report = self.rigging.collect_rigging(run)
-            self.rigging.register_success(job, run, artifacts)
+            self.rigging.register_success(job, run, artifacts, save=False)
             self.jobs.set_stage(job, "rigging", "completed")
             self._rigging_preview_warnings = []
             self._start_rigging_preview(job, run, pose=False)
@@ -272,13 +274,10 @@ class PipelineService(QObject):
             raise RuntimeError("다른 작업이 실행 중입니다.")
         self._active_job = job
         self._operation = operation
-        self._log_path = log_path
+        self._prepare_log(log_path)
         self._json_events = []
         self._cancelled = False
         self._handler = handler
-        if log_path:
-            log_path.parent.mkdir(parents=True, exist_ok=True)
-            log_path.write_text("", encoding="utf-8")
         self.event_received.emit({"type": "stage_started", "stage": operation})
         self.job_changed.emit(job)
         self.process.start(command)
@@ -286,9 +285,15 @@ class PipelineService(QObject):
     def _on_line(self, channel: str, line: str) -> None:
         rendered = f"[{channel}] {line}"
         self.log_received.emit(rendered)
-        if self._log_path:
-            with self._log_path.open("a", encoding="utf-8") as handle:
-                handle.write(rendered + "\n")
+        if self._log_handle:
+            try:
+                self._log_handle.write(rendered + "\n")
+                self._log_lines_since_flush += 1
+                if self._log_lines_since_flush >= 64:
+                    self._log_handle.flush()
+                    self._log_lines_since_flush = 0
+            except OSError:
+                self._close_log()
         if channel == "OUT" and line.lstrip().startswith("{"):
             try:
                 event = json.loads(line)
@@ -301,15 +306,42 @@ class PipelineService(QObject):
     def _on_finished(self, exit_code: int, _exit_status) -> None:
         self.process.flush()
         handler, self._handler = self._handler, None
-        if self._cancelled:
-            job = self._active_job
-            if job and self._operation.startswith("rigging_preview"):
-                request = job.latest_rigging_request
-                if request:
-                    request.preview_warning = "사용자가 미리보기 생성을 취소했습니다. 리그 구조 결과는 유효합니다."
-                    self.jobs.save(job)
-                self.operation_finished.emit("rigging", True, request.preview_warning if request else "미리보기 취소")
+        try:
+            if self._cancelled:
+                job = self._active_job
+                if job and self._operation.startswith("rigging_preview"):
+                    request = job.latest_rigging_request
+                    if request:
+                        request.preview_warning = "사용자가 미리보기 생성을 취소했습니다. 리그 구조 결과는 유효합니다."
+                        self.jobs.save(job)
+                    self.operation_finished.emit("rigging", True, request.preview_warning if request else "미리보기 취소")
+                    return
+                if job and self._operation in {"modeling", "modeling_preview", "blender", "rigging", "rigging_vram"}:
+                    if self._operation.startswith("modeling"):
+                        stage = "modeling"
+                    elif self._operation.startswith("rigging"):
+                        stage = "rigging"
+                        request = job.latest_rigging_request
+                        if request:
+                            request.status = "cancelled"
+                            request.error = "사용자가 실행을 취소했습니다."
+                            request.completed_at = utc_now()
+                    else:
+                        stage = "blender"
+                    self.jobs.set_stage(job, stage, "cancelled", error="사용자가 실행을 취소했습니다.")
+                    self.job_changed.emit(job)
+                self.operation_finished.emit(self._operation, False, "실행을 취소했습니다.")
                 return
+            if handler:
+                handler(exit_code)
+        finally:
+            if self._handler is None and not self.process.running:
+                self._close_log()
+
+    def _on_start_error(self, message: str) -> None:
+        handler, self._handler = self._handler, None
+        try:
+            job = self._active_job
             if job and self._operation in {"modeling", "modeling_preview", "blender", "rigging", "rigging_vram"}:
                 if self._operation.startswith("modeling"):
                     stage = "modeling"
@@ -317,36 +349,37 @@ class PipelineService(QObject):
                     stage = "rigging"
                     request = job.latest_rigging_request
                     if request:
-                        request.status = "cancelled"
-                        request.error = "사용자가 실행을 취소했습니다."
+                        request.status = "failed"
+                        request.error = f"프로세스를 시작할 수 없습니다: {message}"
                         request.completed_at = utc_now()
                 else:
                     stage = "blender"
-                self.jobs.set_stage(job, stage, "cancelled", error="사용자가 실행을 취소했습니다.")
-                self.job_changed.emit(job)
-            self.operation_finished.emit(self._operation, False, "실행을 취소했습니다.")
-            return
-        if handler:
-            handler(exit_code)
-
-    def _on_start_error(self, message: str) -> None:
-        handler, self._handler = self._handler, None
-        job = self._active_job
-        if job and self._operation in {"modeling", "modeling_preview", "blender", "rigging", "rigging_vram"}:
-            if self._operation.startswith("modeling"):
-                stage = "modeling"
-            elif self._operation.startswith("rigging"):
-                stage = "rigging"
-                request = job.latest_rigging_request
-                if request:
-                    request.status = "failed"
-                    request.error = f"프로세스를 시작할 수 없습니다: {message}"
-                    request.completed_at = utc_now()
+                self._fail_stage(job, stage, f"프로세스를 시작할 수 없습니다: {message}")
             else:
-                stage = "blender"
-            self._fail_stage(job, stage, f"프로세스를 시작할 수 없습니다: {message}")
-        else:
-            self.operation_finished.emit(self._operation, False, message)
+                self.operation_finished.emit(self._operation, False, message)
+        finally:
+            if self._handler is None and not self.process.running:
+                self._close_log()
+
+    def _prepare_log(self, path: Path | None) -> None:
+        if path == self._log_path and self._log_handle is not None:
+            return
+        self._close_log()
+        self._log_path = path
+        if path is not None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self._log_handle = path.open("w", encoding="utf-8", newline="\n")
+
+    def _close_log(self) -> None:
+        handle, self._log_handle = self._log_handle, None
+        self._log_lines_since_flush = 0
+        self._log_path = None
+        if handle is not None:
+            try:
+                handle.flush()
+                handle.close()
+            except OSError:
+                pass
 
     def _fail_stage(self, job: Job, stage: str, message: str) -> None:
         self.jobs.set_stage(job, stage, "failed", error=message)

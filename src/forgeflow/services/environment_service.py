@@ -41,23 +41,32 @@ class EnvironmentWorker(QThread):
         checks["unirig"] = self._unirig_check()
         checks["ollama"] = self._ollama_check()
         checks["unity_mcp"] = self._unity_mcp_check()
-        if checks["agent"]["ok"] and checks["mcp_project"]["ok"]:
-            try:
-                adapter = BlenderAdapter(self.config, JobService(self.config.jobs_root))
-                output: list[str] = []
-                code = SyncProcessRunner().run(
-                    adapter.build_check(self.config.jobs_root),
-                    lambda _channel, line: output.append(line),
-                    timeout=120,
-                )
-                event = next((json.loads(line) for line in reversed(output) if line.startswith("{")), {})
-                payload = event.get("payload", {})
-                checks["mcp"] = payload.get("mcp", {"ok": code == 0, "detail": "연결 점검 완료" if code == 0 else "연결 실패"})
-            except Exception as exc:
-                checks["mcp"] = {"ok": False, "detail": str(exc)}
-        else:
-            checks["mcp"] = {"ok": False, "detail": "에이전트/MCP 환경 필요"}
+        checks["mcp"] = self._blender_mcp_check(
+            checks["agent"]["ok"] and checks["mcp_project"]["ok"]
+        )
         self.completed.emit(checks)
+
+    def _blender_mcp_check(self, prerequisites_ready: bool) -> dict[str, Any]:
+        if not prerequisites_ready:
+            return {"ok": False, "detail": "에이전트/MCP 환경 필요"}
+        try:
+            adapter = BlenderAdapter(self.config, JobService(self.config.jobs_root))
+            output: list[str] = []
+            code = SyncProcessRunner().run(
+                adapter.build_check(self.config.jobs_root),
+                lambda _channel, line: output.append(line),
+                timeout=120,
+            )
+            event = next(
+                (json.loads(line) for line in reversed(output) if line.startswith("{")), {}
+            )
+            payload = event.get("payload", {})
+            return payload.get(
+                "mcp",
+                {"ok": code == 0, "detail": "연결 점검 완료" if code == 0 else "연결 실패"},
+            )
+        except Exception as exc:
+            return {"ok": False, "detail": str(exc)}
 
     def _unirig_check(self) -> dict[str, Any]:
         required_commit = "6793c6640ff01c8fb389f3993434124bb43d2933"

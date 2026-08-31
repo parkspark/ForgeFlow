@@ -15,10 +15,10 @@ from PySide6.QtCore import QObject, Signal
 
 from forgeflow.config import AppConfig
 from forgeflow.domain.job import Job, UnitySession, UnityTurn, utc_now
+from forgeflow.domain.process import ProcessCommand
 from forgeflow.services.job_service import JobService, sha256_file
-
-from .modeling_adapter import ProcessCommand
-
+from forgeflow.services.path_utils import same_path
+from forgeflow.services.process_control import terminate_process_tree
 
 UNITY_PROJECT_MARKERS = ("Assets", "ProjectSettings")
 
@@ -30,12 +30,6 @@ class UnityImportResult:
     asset_path: str
     absolute_path: str
     version: int
-
-
-def _same_path(left: str | Path, right: str | Path) -> bool:
-    return os.path.normcase(os.path.realpath(os.path.abspath(str(left)))) == os.path.normcase(
-        os.path.realpath(os.path.abspath(str(right)))
-    )
 
 
 def _safe_job_id(value: str) -> str:
@@ -258,7 +252,7 @@ class UnityAdapter(QObject):
     def start_session(self, job: Job, project_path: str | Path) -> UnitySession:
         project = self.validate_project(project_path)
         if self.running:
-            if self.session and _same_path(self.session.project_path, project):
+            if self.session and same_path(self.session.project_path, project):
                 return self.session
             self.shutdown(wait_seconds=5)
         session_id = f"session-{utc_now().replace(':', '').replace('-', '')[:15]}-{uuid4().hex[:8]}"
@@ -360,7 +354,7 @@ class UnityAdapter(QObject):
             event_type = event["type"]
             if event_type == "session_ready":
                 actual = str(event.get("projectPath") or "")
-                if not self.session or not actual or not _same_path(actual, self.session.project_path):
+                if not self.session or not actual or not same_path(actual, self.session.project_path):
                     expected = self.session.project_path if self.session else "(none)"
                     self._fail_session(
                         f"Unity 프로젝트 identity 불일치: expected {expected}, got {actual or '(missing)'}"
@@ -542,6 +536,7 @@ class UnityAdapter(QObject):
             "unity_write_script", "unity_delete_script", "unity_write_level",
         }
         found: list[str] = []
+        seen: set[str] = set()
 
         def walk(node: Any) -> None:
             if isinstance(node, str):
@@ -549,7 +544,8 @@ class UnityAdapter(QObject):
                 start = normalized.find("Assets/")
                 if start >= 0:
                     candidate = normalized[start:].split("\n", 1)[0].strip(' "\'')
-                    if candidate and candidate not in found:
+                    if candidate and candidate not in seen:
+                        seen.add(candidate)
                         found.append(candidate)
             elif isinstance(node, dict):
                 for child in node.values():
@@ -685,21 +681,7 @@ class UnityAdapter(QObject):
 
     @staticmethod
     def _terminate_tree(process: subprocess.Popen) -> None:
-        if process.poll() is not None:
-            return
-        if os.name == "nt":
-            subprocess.run(
-                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
-        else:
-            process.terminate()
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=5)
+        terminate_process_tree(process)
 
     def shutdown(self, *, wait_seconds: float = 5) -> None:
         process = self.process

@@ -8,9 +8,8 @@ from typing import Any
 from forgeflow.config import AppConfig
 from forgeflow.domain.artifact import Artifact
 from forgeflow.domain.job import BlenderRequest, Job, utc_now
+from forgeflow.domain.process import ProcessCommand
 from forgeflow.services.job_service import JobService, sha256_file
-
-from .modeling_adapter import ProcessCommand
 
 
 def plan_hash(plan: dict[str, Any]) -> str:

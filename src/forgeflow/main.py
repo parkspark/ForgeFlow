@@ -37,7 +37,9 @@ def main(argv: list[str] | None = None) -> int:
     _configure_windows_identity()
     app = QApplication(sys.argv[:1])
     app.setApplicationName("ForgeFlow")
-    app.setApplicationDisplayName("ForgeFlow")
+    # Windows appends the display name to explicit window titles. Keep it
+    # empty so the main window title is shown exactly as configured.
+    app.setApplicationDisplayName("")
     app.setApplicationVersion(__version__)
     icon = _app_icon()
     if icon.is_file():

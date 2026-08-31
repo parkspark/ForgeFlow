@@ -2,21 +2,13 @@ from __future__ import annotations
 
 import os
 import shutil
-from dataclasses import dataclass
 from pathlib import Path
 
 from forgeflow.config import AppConfig
 from forgeflow.domain.artifact import Artifact
 from forgeflow.domain.job import Job, utc_now
+from forgeflow.domain.process import ProcessCommand
 from forgeflow.services.job_service import JobService, sha256_file
-
-
-@dataclass(frozen=True)
-class ProcessCommand:
-    executable: str
-    arguments: list[str]
-    cwd: Path
-    environment: dict[str, str] | None = None
 
 
 class ModelingAdapter:

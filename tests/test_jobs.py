@@ -71,6 +71,49 @@ def test_blender_version_increments(config, image):
     assert service.next_blender_version(job) == 3
 
 
+def test_artifact_batch_is_deduplicated_and_saved_once(config, image, monkeypatch):
+    service = JobService(config.jobs_root)
+    job = service.create("batch", image)
+    root = service.job_directory(job.job_id) / "modeling"
+    artifacts = [
+        Artifact("glb", str(root / "source.glb"), "modeling", utc_now()),
+        Artifact("blend", str(root / "source.blend"), "modeling", utc_now()),
+        Artifact("duplicate", str(root / "source.glb"), "modeling", utc_now()),
+    ]
+    writes = 0
+    original_save = service.save
+
+    def counted_save(value):
+        nonlocal writes
+        writes += 1
+        return original_save(value)
+
+    monkeypatch.setattr(service, "save", counted_save)
+    assert service.add_artifacts(job, artifacts) == 2
+    assert writes == 1
+    assert [item.kind for item in job.artifacts] == ["glb", "blend"]
+
+
+def test_artifact_batch_can_join_larger_state_commit(config, image, monkeypatch):
+    service = JobService(config.jobs_root)
+    job = service.create("deferred batch", image)
+    artifact = Artifact(
+        "glb", str(service.job_directory(job.job_id) / "modeling" / "source.glb"),
+        "modeling", utc_now(),
+    )
+    writes = 0
+
+    def counted_save(_value):
+        nonlocal writes
+        writes += 1
+
+    monkeypatch.setattr(service, "save", counted_save)
+    assert service.add_artifact(job, artifact, save=False) is True
+    assert writes == 0
+    service.set_stage(job, "modeling", "completed")
+    assert writes == 1
+
+
 def test_invalid_job_id_and_corrupt_mismatch_blocked(config, image):
     service = JobService(config.jobs_root)
     with pytest.raises(ValueError, match="작업 ID"):

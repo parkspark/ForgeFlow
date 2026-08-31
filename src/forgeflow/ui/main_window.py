@@ -46,14 +46,16 @@ class MainWindow(QMainWindow):
         self.environment_worker: EnvironmentWorker | None = None
         self._build_ui()
         self._connect()
-        self.refresh_jobs()
+        self.project_panel.set_jobs(self.job_list)
+        if self.job_list:
+            self.select_job(self.job_list[0].job_id)
         if run_environment_checks:
             self.refresh_environment()
         else:
             self.refresh_environment_button.setEnabled(True)
 
     def _build_ui(self) -> None:
-        self.setWindowTitle("ForgeFlow — 이미지→3D·Blender 통합 워크플로")
+        self.setWindowTitle("ForgeFlow - 이미지, 3d 모델링, Blender, Unity 통합 워크플로")
         self.resize(1480, 940)
         central = QWidget()
         root = QVBoxLayout(central)
@@ -135,7 +137,6 @@ class MainWindow(QMainWindow):
         self.unity_panel.open_path_requested.connect(self.open_path)
         self.unity_panel.focus_unity_requested.connect(self.focus_unity)
         self.unity.event_received.connect(self.unity_panel.append_event)
-        self.unity.event_received.connect(lambda _event: self._reload_unity_job())
         self.unity.session_changed.connect(self.unity_panel.set_session)
         self.unity.job_changed.connect(self._job_changed)
         self.unity.protocol_error.connect(self._unity_error)
@@ -170,9 +171,25 @@ class MainWindow(QMainWindow):
     def refresh_jobs(self) -> None:
         selected = self.current_job.job_id if self.current_job else None
         self.job_list = self.jobs.list_jobs()
+        if selected:
+            self.current_job = next(
+                (job for job in self.job_list if job.job_id == selected), self.current_job
+            )
         self.project_panel.set_jobs(self.job_list, selected)
         if self.job_list and self.current_job is None:
             self.select_job(self.job_list[0].job_id)
+        elif self.current_job is not None:
+            self._render_job()
+
+    def _upsert_job(self, job: Job) -> None:
+        self.job_list = [item for item in self.job_list if item.job_id != job.job_id]
+        self.job_list.append(job)
+        self.job_list.sort(key=lambda item: item.updated_at, reverse=True)
+        index = next(
+            position for position, item in enumerate(self.job_list) if item.job_id == job.job_id
+        )
+        selected = self.current_job.job_id if self.current_job else None
+        self.project_panel.upsert_job(job, index, selected)
 
     def create_job(self) -> None:
         image, _ = QFileDialog.getOpenFileName(self, "입력 이미지 선택", "", "이미지 (*.png *.jpg *.jpeg)")
@@ -187,14 +204,16 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "작업 생성 실패", str(exc))
             return
         self.current_job = job
-        self.refresh_jobs()
-        self.select_job(job.job_id)
+        self._upsert_job(job)
+        self._render_job()
 
     def select_job(self, job_id: str) -> None:
         if self.pipeline.busy and self.current_job and self.current_job.job_id != job_id:
             self.statusBar().showMessage("실행 중에도 다른 작업을 볼 수 있지만 실행 버튼은 잠깁니다.")
         try:
-            self.current_job = self.jobs.load(job_id)
+            self.current_job = next(
+                (job for job in self.job_list if job.job_id == job_id), None
+            ) or self.jobs.load(job_id)
             self._render_job()
         except Exception as exc:
             QMessageBox.warning(self, "작업 열기 실패", str(exc))
@@ -253,8 +272,6 @@ class MainWindow(QMainWindow):
         project = self.unity_panel.project_path.text().strip()
         try:
             result = self.unity.import_humanoid_fbx(self.current_job, project)
-            self.current_job = self.jobs.load(self.current_job.job_id)
-            self._render_job()
             QMessageBox.information(
                 self, "FBX 가져오기 완료",
                 f"Asset: {result.asset_path}\n원본 SHA-256: {result.source_sha256}\n\n"
@@ -276,7 +293,6 @@ class MainWindow(QMainWindow):
                 text, include_asset=include_asset, include_current_scene=include_scene,
                 analyze_screenshot=analyze_screenshot,
             )
-            self._render_job()
         except Exception as exc:
             QMessageBox.critical(self, "Unity 명령 전송 실패", str(exc))
 
@@ -290,14 +306,12 @@ class MainWindow(QMainWindow):
     def accept_unity_review(self, turn_id: str, note: str) -> None:
         try:
             self.unity.review_turn(turn_id, True, note)
-            self._reload_unity_job()
         except Exception as exc:
             QMessageBox.critical(self, "검토 저장 실패", str(exc))
 
     def reject_unity_review(self, turn_id: str, note: str) -> None:
         try:
             self.unity.review_turn(turn_id, False, note)
-            self._reload_unity_job()
         except Exception as exc:
             QMessageBox.critical(self, "검토 저장 실패", str(exc))
 
@@ -311,17 +325,8 @@ class MainWindow(QMainWindow):
                 include_current_scene=include_scene,
                 analyze_screenshot=analyze_screenshot,
             )
-            self._render_job()
         except Exception as exc:
             QMessageBox.critical(self, "수정 요청 전송 실패", str(exc))
-
-    def _reload_unity_job(self) -> None:
-        if self.current_job:
-            try:
-                self.current_job = self.jobs.load(self.current_job.job_id)
-                self._render_job()
-            except Exception:
-                pass
 
     def _unity_error(self, message: str) -> None:
         self.statusBar().showMessage(message, 20000)
@@ -419,17 +424,16 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "자동 리깅 시작 실패", str(exc))
 
     def _job_changed(self, job: Job) -> None:
-        if self.current_job and self.current_job.job_id == job.job_id:
+        is_current = bool(self.current_job and self.current_job.job_id == job.job_id)
+        if is_current:
             self.current_job = job
-        self.refresh_jobs()
-        self._render_job()
+        self._upsert_job(job)
+        if is_current:
+            self._render_job()
 
     def _operation_finished(self, operation: str, success: bool, message: str) -> None:
         self.statusBar().showMessage(message, 15000)
         self.log_panel.append(("[완료] " if success else "[실패] ") + message)
-        if self.current_job:
-            self.current_job = self.jobs.load(self.current_job.job_id)
-        self.refresh_jobs()
         self._render_job()
         if success and operation in {"modeling", "blender_plan", "blender", "rigging"}:
             if operation == "modeling":

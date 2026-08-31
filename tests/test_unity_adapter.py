@@ -162,6 +162,29 @@ def test_empty_checks_are_not_verified(tmp_path):
     assert UnityAdapter.parse_receipt(receipt)["automated_status"] == "unavailable"
 
 
+def test_changed_assets_are_ordered_and_deduplicated(tmp_path):
+    audit = tmp_path / "run.jsonl"
+    events = [
+        {
+            "event": "tool_result", "name": "unity_write_script",
+            "arguments": {"path": "Assets/Scripts/Player.cs"},
+            "result": {"paths": ["Assets/Scripts/Player.cs", "Assets/Scenes/Main.unity"]},
+        },
+        {
+            "event": "tool_result", "name": "unity_save_scene",
+            "arguments": {"path": "Assets/Scenes/Main.unity"},
+            "result": "Assets/Materials/Hero.mat",
+        },
+    ]
+    audit.write_text("\n".join(json.dumps(event) for event in events), encoding="utf-8")
+
+    assert UnityAdapter.collect_changed_assets(audit) == [
+        "Assets/Scripts/Player.cs",
+        "Assets/Scenes/Main.unity",
+        "Assets/Materials/Hero.mat",
+    ]
+
+
 def test_human_accept_and_reject_are_explicit(config, image, unity_project):
     jobs, job, adapter = _adapter(config, image, unity_project)
     turn = UnityTurn("turn-a", "session-test", "x", "x", status="succeeded")
