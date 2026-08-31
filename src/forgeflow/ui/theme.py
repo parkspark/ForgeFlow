@@ -66,14 +66,14 @@ QStatusBar {{
     border-top: 1px solid {colors['border']};
     color: {colors['muted']};
 }}
-QLineEdit, QPlainTextEdit, QListWidget, QComboBox, QSpinBox {{
+QLineEdit, QPlainTextEdit, QTextEdit, QListWidget, QComboBox, QSpinBox {{
     background: {colors['surface']};
     color: {colors['text']};
     border: 1px solid {colors['border']};
     border-radius: 4px;
     padding: 6px;
 }}
-QLineEdit:focus, QPlainTextEdit:focus, QListWidget:focus, QComboBox:focus, QSpinBox:focus {{
+QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus, QListWidget:focus, QComboBox:focus, QSpinBox:focus {{
     border-color: {colors['accent']};
 }}
 QComboBox::drop-down, QSpinBox::up-button, QSpinBox::down-button {{
@@ -159,7 +159,7 @@ QTabBar::tab:selected {{
     border-bottom-color: {colors['accent']};
 }}
 QSplitter::handle {{ background: {colors['border']}; }}
-QSplitter::handle:horizontal {{ width: 1px; }}
+QSplitter::handle:horizontal {{ width: 5px; }}
 QSplitter::handle:vertical {{ height: 1px; }}
 QCheckBox::indicator {{
     width: 15px;
@@ -187,6 +187,58 @@ QLabel#previewFrame {{
 QLabel[envState="checking"] {{ color: {colors['muted']}; }}
 QLabel[envState="ok"] {{ color: {colors['success']}; }}
 QLabel[envState="error"] {{ color: {colors['error']}; }}
+QWidget#unityComposer {{
+    background: {colors['surface_alt']};
+    border: 1px solid {colors['border']};
+    border-radius: 7px;
+}}
+QWidget#unityPanel {{ background: {colors['panel']}; }}
+QPlainTextEdit#unityChatHistory {{
+    background: {colors['surface']};
+    border-radius: 7px;
+    padding: 10px;
+}}
+QLabel#unityChatDescription {{ color: {colors['muted']}; }}
+QLabel[sectionCaption="true"] {{
+    color: {colors['muted']};
+    font-size: 12px;
+}}
+QLabel[connectionState="idle"] {{
+    color: {colors['muted']};
+    background: {colors['surface_alt']};
+    border-radius: 4px;
+    padding: 5px 7px;
+}}
+QLabel[connectionState="ok"] {{
+    color: {colors['success']};
+    background: {colors['surface_alt']};
+    border-radius: 4px;
+    padding: 5px 7px;
+}}
+QLabel[connectionState="error"] {{
+    color: {colors['error']};
+    background: {colors['surface_alt']};
+    border-radius: 4px;
+    padding: 5px 7px;
+}}
+QPushButton[actionRole="primary"] {{
+    background: {colors['accent']};
+    color: {colors['button_text']};
+    border-color: {colors['accent']};
+}}
+QPushButton[actionRole="primary"]:hover {{ background: {colors['accent_hover']}; }}
+QPushButton[actionRole="primary"]:pressed {{ background: {colors['accent_pressed']}; }}
+QPushButton[actionRole="primary"]:disabled {{
+    background: {colors['disabled_bg']};
+    color: {colors['disabled_text']};
+    border-color: {colors['border']};
+}}
+QScrollArea#unitySidebar,
+QScrollArea#unitySidebar > QWidget > QWidget,
+QWidget#unitySidebarBody {{
+    background: {colors['panel']};
+    border: 0;
+}}
 QScrollBar:vertical, QScrollBar:horizontal {{
     background: {colors['panel']};
     border: 0;

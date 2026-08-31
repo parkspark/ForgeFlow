@@ -4,11 +4,11 @@ import json
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout,
-    QLabel, QLineEdit, QPlainTextEdit, QPushButton, QScrollArea, QSplitter,
-    QTextEdit, QVBoxLayout, QWidget,
+    QCheckBox, QComboBox, QFileDialog, QFormLayout, QFrame, QGridLayout,
+    QGroupBox, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton,
+    QScrollArea, QSplitter, QTextEdit, QVBoxLayout, QWidget,
 )
 
 from forgeflow.domain.job import Job, UnitySession, UnityTurn
@@ -36,128 +36,224 @@ class UnityPanel(QWidget):
         self._build_ui()
 
     def _build_ui(self) -> None:
+        self.setObjectName("unityPanel")
         root = QVBoxLayout(self)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(8)
+
+        self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.main_splitter.setChildrenCollapsible(False)
+        self.main_splitter.setHandleWidth(5)
+
+        # The conversation is the primary workspace and always receives most
+        # of the available width and height.
+        chat_group = QGroupBox("Unity 텍스트 채팅")
+        chat_group.setObjectName("unityChatGroup")
+        chat_layout = QVBoxLayout(chat_group)
+        chat_layout.setContentsMargins(12, 16, 12, 12)
+        chat_layout.setSpacing(8)
+        chat_header = QHBoxLayout()
+        chat_description = QLabel("로컬 모델과 Unity 도구 실행 내역을 한곳에서 확인합니다.")
+        chat_description.setObjectName("unityChatDescription")
+        chat_header.addWidget(chat_description, 1)
+        self.chat_connection_hint = QLabel("프로젝트 연결 대기")
+        self.chat_connection_hint.setProperty("connectionState", "idle")
+        chat_header.addWidget(self.chat_connection_hint)
+        self.sidebar_toggle = QPushButton("보조 패널 숨기기")
+        self.sidebar_toggle.setCheckable(True)
+        self.sidebar_toggle.setToolTip("연결·작업 컨텍스트·검토 패널을 접어 채팅을 넓게 봅니다.")
+        self.sidebar_toggle.toggled.connect(self._toggle_sidebar)
+        chat_header.addWidget(self.sidebar_toggle)
+        chat_layout.addLayout(chat_header)
+
+        self.chat = QPlainTextEdit()
+        self.chat.setObjectName("unityChatHistory")
+        self.chat.setReadOnly(True)
+        self.chat.setMinimumHeight(340)
+        self.chat.setPlaceholderText(
+            "Unity 프로젝트를 연결하면 로컬 모델 응답, 도구 호출, 마일스톤과 오류가 여기에 표시됩니다."
+        )
+        chat_layout.addWidget(self.chat, 1)
+
+        self.screenshot_preview = QLabel("스크린샷 없음")
+        self.screenshot_preview.setObjectName("previewFrame")
+        self.screenshot_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.screenshot_preview.setMinimumHeight(80)
+        self.screenshot_preview.setMaximumHeight(180)
+        self.screenshot_preview.setVisible(False)
+        chat_layout.addWidget(self.screenshot_preview)
+
+        composer = QWidget()
+        composer.setObjectName("unityComposer")
+        composer_layout = QVBoxLayout(composer)
+        composer_layout.setContentsMargins(10, 10, 10, 10)
+        composer_layout.setSpacing(8)
+        self.input = QTextEdit()
+        self.input.setObjectName("unityPromptInput")
+        self.input.setAccessibleName("Unity 요청 입력")
+        self.input.setPlaceholderText(
+            "Unity에 요청할 내용을 입력하세요. 예: 현재 활성 씬과 주요 GameObject를 분석해줘.\n"
+            "Ctrl+Enter로 전송"
+        )
+        self.input.setMinimumHeight(82)
+        self.input.setMaximumHeight(120)
+        composer_layout.addWidget(self.input)
+        options = QHBoxLayout()
+        options.setSpacing(12)
+        self.include_scene = QCheckBox("씬 컨텍스트")
+        self.include_scene.setToolTip("현재 Unity 씬 정보를 요청에 포함합니다.")
+        self.include_scene.setChecked(True)
+        self.include_asset = QCheckBox("FBX 컨텍스트")
+        self.include_asset.setToolTip("현재 가져온 Humanoid FBX 정보를 요청에 포함합니다.")
+        self.analyze_screenshot = QCheckBox("스크린샷 자동 분석")
+        self.analyze_screenshot.setToolTip("실행 후 캡처된 정적 화면을 로컬 모델이 함께 분석합니다.")
+        options.addWidget(self.include_scene)
+        options.addWidget(self.include_asset)
+        options.addWidget(self.analyze_screenshot)
+        options.addStretch()
+        self.cancel_button = QPushButton("실행 취소")
+        self.cancel_button.clicked.connect(self.cancel_requested)
+        self.send_button = QPushButton("전송  Ctrl+Enter")
+        self.send_button.setProperty("actionRole", "primary")
+        self.send_button.setMinimumWidth(126)
+        self.send_button.clicked.connect(self._send)
+        options.addWidget(self.cancel_button)
+        options.addWidget(self.send_button)
+        composer_layout.addLayout(options)
+        chat_layout.addWidget(composer)
+        self.send_shortcut = QShortcut(QKeySequence("Ctrl+Return"), self.input)
+        self.send_shortcut.activated.connect(self._send)
+        self.send_keypad_shortcut = QShortcut(QKeySequence("Ctrl+Enter"), self.input)
+        self.send_keypad_shortcut.activated.connect(self._send)
+        self.main_splitter.addWidget(chat_group)
+
+        # Connection, asset context and review are secondary. They remain
+        # reachable in a dedicated scroll rail without reducing chat height.
+        self.sidebar_scroll = QScrollArea()
+        self.sidebar_scroll.setObjectName("unitySidebar")
+        self.sidebar_scroll.setWidgetResizable(True)
+        self.sidebar_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.sidebar_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.sidebar_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.sidebar_scroll.setMinimumWidth(340)
+        self.sidebar_scroll.setMaximumWidth(460)
+        sidebar_body = QWidget()
+        sidebar_body.setObjectName("unitySidebarBody")
+        sidebar_layout = QVBoxLayout(sidebar_body)
+        sidebar_layout.setContentsMargins(4, 0, 4, 4)
+        sidebar_layout.setSpacing(10)
+
         connection = QGroupBox("Unity 연결")
         connection_layout = QVBoxLayout(connection)
-        project_row = QHBoxLayout()
+        connection_layout.setSpacing(8)
+        project_caption = QLabel("프로젝트 경로")
+        project_caption.setProperty("sectionCaption", True)
+        connection_layout.addWidget(project_caption)
         self.project_path = QLineEdit()
         self.project_path.setPlaceholderText(r"C:\UnityProjects\MyGame")
+        self.project_path.setClearButtonEnabled(True)
+        connection_layout.addWidget(self.project_path)
+        project_row = QHBoxLayout()
         self.recent_projects = QComboBox()
-        self.recent_projects.setMinimumWidth(220)
         self.recent_projects.setPlaceholderText("최근 프로젝트")
         self.recent_projects.currentTextChanged.connect(self._recent_selected)
-        browse = QPushButton("선택")
+        project_row.addWidget(self.recent_projects, 1)
+        browse = QPushButton("찾아보기")
         browse.clicked.connect(self.browse_project_requested)
+        project_row.addWidget(browse)
+        connection_layout.addLayout(project_row)
+        connection_actions = QGridLayout()
         self.connect_button = QPushButton("연결")
+        self.connect_button.setProperty("actionRole", "primary")
         self.connect_button.clicked.connect(lambda: self.connect_requested.emit(self.project_path.text().strip()))
         self.disconnect_button = QPushButton("연결 해제")
         self.disconnect_button.clicked.connect(self.disconnect_requested)
         self.open_project_button = QPushButton("프로젝트 폴더 열기")
         self.open_project_button.clicked.connect(self.open_project_requested)
-        for widget in (
-            QLabel("프로젝트"), self.project_path, self.recent_projects, browse,
-            self.connect_button, self.disconnect_button, self.open_project_button,
-        ):
-            project_row.addWidget(widget)
-        connection_layout.addLayout(project_row)
-        status_row = QHBoxLayout()
+        connection_actions.addWidget(self.connect_button, 0, 0)
+        connection_actions.addWidget(self.disconnect_button, 0, 1)
+        connection_actions.addWidget(self.open_project_button, 1, 0, 1, 2)
+        connection_layout.addLayout(connection_actions)
+
         self.agent_status = QLabel("Unity Agent: 연결 안 됨")
         self.mcp_status = QLabel("Unity MCP: 확인 전")
         self.bridge_status = QLabel("Editor Bridge: 확인 전")
         self.identity_status = QLabel("실제 프로젝트 identity: 확인 전")
         for widget in (self.agent_status, self.mcp_status, self.bridge_status, self.identity_status):
-            status_row.addWidget(widget)
-        status_row.addStretch()
-        connection_layout.addLayout(status_row)
+            widget.setWordWrap(True)
+            widget.setProperty("connectionState", "idle")
+            connection_layout.addWidget(widget)
         self.restart_notice = QLabel(
             "새 로컬 모델 세션 — Unity 프로젝트 상태와 저장된 채팅 기록은 유지되지만 "
             "모델의 내부 대화 컨텍스트는 초기화되었습니다."
         )
+        self.restart_notice.setObjectName("guidance")
         self.restart_notice.setWordWrap(True)
         connection_layout.addWidget(self.restart_notice)
-        root.addWidget(connection)
+        sidebar_layout.addWidget(connection)
 
         context = QGroupBox("작업 컨텍스트")
-        context_layout = QFormLayout(context)
+        context_layout = QVBoxLayout(context)
+        context_layout.setSpacing(6)
+        job_caption = QLabel("ForgeFlow Job")
+        job_caption.setProperty("sectionCaption", True)
+        context_layout.addWidget(job_caption)
         self.job_label = QLabel("선택된 Job 없음")
+        self.job_label.setWordWrap(True)
+        context_layout.addWidget(self.job_label)
+        fbx_caption = QLabel("Humanoid FBX")
+        fbx_caption.setProperty("sectionCaption", True)
+        context_layout.addWidget(fbx_caption)
         self.fbx_label = QLabel("없음 — FBX 없이도 Unity 채팅을 사용할 수 있습니다.")
+        self.fbx_label.setWordWrap(True)
         self.fbx_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        fbx_row = QHBoxLayout()
-        fbx_row.addWidget(self.fbx_label, 1)
+        context_layout.addWidget(self.fbx_label)
         self.import_button = QPushButton("Unity 프로젝트로 가져오기")
         self.import_button.clicked.connect(self.import_fbx_requested)
-        fbx_row.addWidget(self.import_button)
+        context_layout.addWidget(self.import_button)
+        asset_caption = QLabel("Unity Asset")
+        asset_caption.setProperty("sectionCaption", True)
+        context_layout.addWidget(asset_caption)
         self.asset_label = QLabel("가져온 Asset 없음")
+        self.asset_label.setWordWrap(True)
         self.asset_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.include_asset = QCheckBox("현재 FBX 컨텍스트 포함")
-        context_layout.addRow("ForgeFlow Job", self.job_label)
-        context_layout.addRow("Humanoid FBX", fbx_row)
-        context_layout.addRow("Unity Asset", self.asset_label)
-        context_layout.addRow("프롬프트", self.include_asset)
-        root.addWidget(context)
+        context_layout.addWidget(self.asset_label)
+        sidebar_layout.addWidget(context)
 
-        splitter = QSplitter(Qt.Orientation.Vertical)
-        chat_group = QGroupBox("Unity 텍스트 채팅")
-        chat_layout = QVBoxLayout(chat_group)
-        self.chat = QPlainTextEdit()
-        self.chat.setReadOnly(True)
-        self.chat.setPlaceholderText("로컬 모델 응답, 도구 호출, 마일스톤, 오류, 스크린샷이 표시됩니다.")
-        chat_layout.addWidget(self.chat, 1)
-        self.screenshot_preview = QLabel("스크린샷 없음")
-        self.screenshot_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.screenshot_preview.setMinimumHeight(80)
-        self.screenshot_preview.setMaximumHeight(220)
-        chat_layout.addWidget(self.screenshot_preview)
-        self.input = QTextEdit()
-        self.input.setPlaceholderText("예: 현재 활성 씬과 주요 GameObject를 분석해서 알려줘.")
-        self.input.setMaximumHeight(105)
-        chat_layout.addWidget(self.input)
-        options = QHBoxLayout()
-        self.analyze_screenshot = QCheckBox("정적 스크린샷 자동 분석")
-        self.include_scene = QCheckBox("현재 씬 컨텍스트 포함")
-        self.include_scene.setChecked(True)
-        options.addWidget(self.analyze_screenshot)
-        options.addWidget(self.include_scene)
-        options.addStretch()
-        self.send_button = QPushButton("전송")
-        self.send_button.clicked.connect(self._send)
-        self.cancel_button = QPushButton("실행 취소")
-        self.cancel_button.clicked.connect(self.cancel_requested)
-        options.addWidget(self.send_button)
-        options.addWidget(self.cancel_button)
-        chat_layout.addLayout(options)
-        splitter.addWidget(chat_group)
-
-        review_scroll = QScrollArea()
-        review_scroll.setWidgetResizable(True)
-        review_body = QWidget()
-        review_layout = QVBoxLayout(review_body)
-        review = QGroupBox("검토 — 세 상태를 별도로 판정")
+        review = QGroupBox("실행 결과 검토")
         review_form = QFormLayout(review)
+        review_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         self.execution_result = QLabel("Agent execution: 대기")
         self.automated_result = QLabel("Automated verification: unavailable")
         self.human_result = QLabel("Human review: pending")
+        for result_label in (self.execution_result, self.automated_result, self.human_result):
+            result_label.setWordWrap(True)
         self.checks = QPlainTextEdit()
         self.checks.setReadOnly(True)
-        self.checks.setMaximumHeight(150)
+        self.checks.setMaximumHeight(130)
         self.review_note = QTextEdit()
         self.review_note.setPlaceholderText("검토 메모 또는 수정 요청을 입력하세요.")
-        self.review_note.setMaximumHeight(90)
+        self.review_note.setMinimumHeight(76)
+        self.review_note.setMaximumHeight(110)
         review_form.addRow("에이전트", self.execution_result)
         review_form.addRow("자동 검증", self.automated_result)
         review_form.addRow("인간 검토", self.human_result)
-        review_form.addRow("requested / measured / skipped / unmapped", self.checks)
+        review_form.addRow("검증 상세", self.checks)
         review_form.addRow("검토 메모", self.review_note)
-        review_layout.addWidget(review)
+        sidebar_layout.addWidget(review)
+
         guidance = QLabel(
-            "자동 실행은 완료됐습니다. Unity Play Mode에서 실제 동작을 확인한 뒤 "
-            "승인하거나 수정 의견을 입력하세요. 생성된 씬을 열고 Play Mode에서 입력·애니메이션·"
-            "카메라·물리·타이밍을 직접 확인해야 합니다."
+            "Unity Play Mode에서 입력·애니메이션·카메라·물리·타이밍을 직접 확인한 뒤 승인하세요."
         )
+        guidance.setObjectName("guidance")
         guidance.setWordWrap(True)
-        review_layout.addWidget(guidance)
-        actions = QHBoxLayout()
+        sidebar_layout.addWidget(guidance)
+
+        actions = QGridLayout()
+        actions.setHorizontalSpacing(6)
+        actions.setVerticalSpacing(6)
         self.accept_button = QPushButton("결과 승인")
+        self.accept_button.setProperty("actionRole", "primary")
         self.accept_button.clicked.connect(self._accept)
         self.reject_button = QPushButton("수정 필요")
         self.reject_button.clicked.connect(self._reject)
@@ -173,19 +269,28 @@ class UnityPanel(QWidget):
         self.log_button.clicked.connect(lambda: self._open_latest("log"))
         self.scene_button = QPushButton("생성된 씬 열기 안내")
         self.scene_button.clicked.connect(lambda: self._open_latest("scene"))
-        for button in (
-            self.accept_button, self.reject_button, self.repair_button, self.focus_button,
-            self.screenshot_button, self.receipt_button, self.log_button,
-            self.scene_button,
-        ):
-            actions.addWidget(button)
-        review_layout.addLayout(actions)
-        review_scroll.setWidget(review_body)
-        splitter.addWidget(review_scroll)
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 2)
-        root.addWidget(splitter, 1)
+        actions.addWidget(self.accept_button, 0, 0)
+        actions.addWidget(self.reject_button, 0, 1)
+        actions.addWidget(self.repair_button, 1, 0, 1, 2)
+        actions.addWidget(self.focus_button, 2, 0)
+        actions.addWidget(self.screenshot_button, 2, 1)
+        actions.addWidget(self.scene_button, 3, 0)
+        actions.addWidget(self.receipt_button, 3, 1)
+        actions.addWidget(self.log_button, 4, 0, 1, 2)
+        sidebar_layout.addLayout(actions)
+        sidebar_layout.addStretch()
+
+        self.sidebar_scroll.setWidget(sidebar_body)
+        self.main_splitter.addWidget(self.sidebar_scroll)
+        self.main_splitter.setStretchFactor(0, 5)
+        self.main_splitter.setStretchFactor(1, 2)
+        self.main_splitter.setSizes([820, 380])
+        root.addWidget(self.main_splitter, 1)
         self.set_session(None)
+
+    def _toggle_sidebar(self, hidden: bool) -> None:
+        self.sidebar_scroll.setVisible(not hidden)
+        self.sidebar_toggle.setText("보조 패널 보기" if hidden else "보조 패널 숨기기")
 
     def _recent_selected(self, text: str) -> None:
         if text and text != self.project_path.text():
@@ -204,6 +309,8 @@ class UnityPanel(QWidget):
         self.job_label.setText(f"{job.name} ({job.job_id})")
         self.fbx_label.setText(job.unity_input_path or "없음 — FBX 없이도 Unity 채팅을 사용할 수 있습니다.")
         self.asset_label.setText(job.unity_asset_path or "가져온 Asset 없음")
+        self.fbx_label.setToolTip(job.unity_input_path or "")
+        self.asset_label.setToolTip(job.unity_asset_path or "")
         if job.unity_project_path and not self.project_path.text().strip():
             self.project_path.setText(job.unity_project_path)
         self.import_button.setEnabled(bool(job.unity_input_path) and not busy)
@@ -230,24 +337,59 @@ class UnityPanel(QWidget):
     def set_session(self, session: UnitySession | None) -> None:
         self.session = session
         status = session.status if session else "disconnected"
-        self.agent_status.setText(f"Unity Agent: {status}")
         ready = bool(session and session.status == "ready")
-        self.mcp_status.setText(f"Unity MCP: {'연결됨' if ready else '확인 전'}")
-        self.bridge_status.setText(f"Editor Bridge: {'연결됨' if ready else '확인 전'}")
+        failed = status == "failed"
+        state = "ok" if ready else ("error" if failed else "idle")
+        status_text = {
+            "disconnected": "연결 안 됨",
+            "starting": "연결 중…",
+            "ready": "연결됨",
+            "closed": "연결 종료",
+            "failed": "연결 실패",
+        }.get(status, status)
+        self._set_connection_label(self.agent_status, f"Unity Agent  ·  {status_text}", state)
+        dependent_text = "연결됨" if ready else ("연결 실패" if failed else "확인 전")
+        self._set_connection_label(self.mcp_status, f"Unity MCP  ·  {dependent_text}", state)
+        self._set_connection_label(self.bridge_status, f"Editor Bridge  ·  {dependent_text}", state)
         if session and session.project_identity:
             identity = session.project_identity
-            self.identity_status.setText(
+            self._set_connection_label(
+                self.identity_status,
                 f"실제 프로젝트: {identity.get('productName') or '?'} · "
-                f"{identity.get('projectPath') or '?'}"
+                f"{identity.get('projectPath') or '?'}",
+                "ok",
             )
         elif session and session.error:
-            self.identity_status.setText(f"identity 오류: {session.error}")
+            self._set_connection_label(
+                self.identity_status, f"프로젝트 identity 오류: {session.error}", "error"
+            )
         else:
-            self.identity_status.setText("실제 프로젝트 identity: 확인 전")
-        self.connect_button.setEnabled(not ready)
+            self._set_connection_label(
+                self.identity_status, "실제 프로젝트 identity  ·  확인 전", "idle"
+            )
+        if ready and session and session.project_identity:
+            product = session.project_identity.get("productName") or "Unity"
+            hint = f"연결됨  ·  {product}"
+        elif status == "starting":
+            hint = "Unity 연결 중…"
+        elif failed:
+            hint = "연결 실패  ·  우측 상태 확인"
+        else:
+            hint = "프로젝트 연결 대기"
+        self._set_connection_label(self.chat_connection_hint, hint, state)
+        self.restart_notice.setVisible(session is not None and status in {"starting", "ready"})
+        self.connect_button.setEnabled(status in {"disconnected", "closed", "failed"})
         self.disconnect_button.setEnabled(session is not None and status in {"starting", "ready"})
         self.send_button.setEnabled(ready)
         self.cancel_button.setEnabled(ready)
+
+    @staticmethod
+    def _set_connection_label(label: QLabel, text: str, state: str) -> None:
+        label.setText(text)
+        label.setProperty("connectionState", state)
+        label.style().unpolish(label)
+        label.style().polish(label)
+        label.update()
 
     def append_event(self, event: dict) -> None:
         event_type = event.get("type")
@@ -280,6 +422,7 @@ class UnityPanel(QWidget):
 
     def _show_screenshot(self, path: str) -> None:
         pixmap = QPixmap(path)
+        self.screenshot_preview.setVisible(True)
         if pixmap.isNull():
             self.screenshot_preview.setText(path)
             return
@@ -297,6 +440,9 @@ class UnityPanel(QWidget):
             self.automated_result.setText("Automated verification: unavailable")
             self.human_result.setText("Human review: pending")
             self.checks.clear()
+            self.screenshot_preview.clear()
+            self.screenshot_preview.setText("스크린샷 없음")
+            self.screenshot_preview.setVisible(False)
             for button in (self.accept_button, self.reject_button, self.repair_button):
                 button.setEnabled(False)
             return
@@ -327,6 +473,10 @@ class UnityPanel(QWidget):
         self.review_note.setPlainText(turn.human_review_note)
         if turn.screenshot_paths:
             self._show_screenshot(turn.screenshot_paths[-1])
+        else:
+            self.screenshot_preview.clear()
+            self.screenshot_preview.setText("스크린샷 없음")
+            self.screenshot_preview.setVisible(False)
 
     def _send(self) -> None:
         text = self.input.toPlainText()

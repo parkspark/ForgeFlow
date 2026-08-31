@@ -16,6 +16,8 @@ def test_light_and_dark_styles_are_complete_and_distinct():
         assert "QPushButton" in stylesheet
         assert "QTabBar::tab:selected" in stylesheet
         assert 'QLabel[envState="ok"]' in stylesheet
+        assert 'QWidget#unityComposer' in stylesheet
+        assert 'QLabel[connectionState="ok"]' in stylesheet
         assert "#2563eb" not in stylesheet.lower()
 
 

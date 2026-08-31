@@ -9,6 +9,7 @@ from PySide6.QtCore import QTimer
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
+from . import __version__
 from .ui.main_window import MainWindow
 
 
@@ -37,7 +38,7 @@ def main(argv: list[str] | None = None) -> int:
     app = QApplication(sys.argv[:1])
     app.setApplicationName("ForgeFlow")
     app.setApplicationDisplayName("ForgeFlow")
-    app.setApplicationVersion("0.1.0")
+    app.setApplicationVersion(__version__)
     icon = _app_icon()
     if icon.is_file():
         app.setWindowIcon(QIcon(str(icon)))

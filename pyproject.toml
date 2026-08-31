@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "forgeflow"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Windows desktop orchestrator for local image-to-3D, Blender editing, and Unity rigging/animation"
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -20,6 +20,9 @@ forgeflow = "forgeflow.main:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/forgeflow"]
+
+[tool.hatch.version]
+path = "src/forgeflow/__init__.py"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
