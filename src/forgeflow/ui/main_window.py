@@ -32,7 +32,7 @@ from .unity_panel import UnityPanel
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, config: AppConfig | None = None):
+    def __init__(self, config: AppConfig | None = None, *, run_environment_checks: bool = True):
         super().__init__()
         self.config = config or AppConfig.load()
         self.jobs = JobService(self.config.jobs_root)
@@ -47,7 +47,10 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._connect()
         self.refresh_jobs()
-        self.refresh_environment()
+        if run_environment_checks:
+            self.refresh_environment()
+        else:
+            self.refresh_environment_button.setEnabled(True)
 
     def _build_ui(self) -> None:
         self.setWindowTitle("ForgeFlow — 이미지→3D·Blender 통합 워크플로")
@@ -60,7 +63,7 @@ class MainWindow(QMainWindow):
         for key, label in (
             ("modeling", "Pixal3D"), ("gpu", "GPU"), ("wsl", "WSL"),
             ("ollama", "Ollama"), ("mcp", "Blender MCP"), ("unirig", "UniRig"),
-            ("blender", "Blender"),
+            ("blender", "Blender"), ("unity_mcp", "Unity MCP"),
         ):
             widget = QLabel(f"● {label}: 확인 중")
             widget.setProperty("envState", "checking")
@@ -462,7 +465,8 @@ class MainWindow(QMainWindow):
 
     def _environment_ready(self, checks: dict) -> None:
         names = {"modeling": "Pixal3D", "gpu": "GPU", "wsl": "WSL", "ollama": "Ollama",
-                 "mcp": "Blender MCP", "unirig": "UniRig", "blender": "Blender"}
+                 "mcp": "Blender MCP", "unirig": "UniRig", "blender": "Blender",
+                 "unity_mcp": "Unity MCP"}
         for key, label in self.environment_labels.items():
             check = checks.get(key, {"ok": False, "detail": "점검 결과 없음"})
             label.setText(f"{'●' if check['ok'] else '○'} {names[key]}: {'연결됨' if check['ok'] else '실패'}")
@@ -494,5 +498,10 @@ class MainWindow(QMainWindow):
             self.unity.shutdown()
         if self.environment_worker and self.environment_worker.isRunning():
             self.environment_worker.requestInterruption()
-            self.environment_worker.wait(2000)
+            if not self.environment_worker.wait(2000):
+                # Environment checks are read-only and may be blocked inside a
+                # third-party command. Do not leave a live QThread behind while
+                # Qt tears down the window.
+                self.environment_worker.terminate()
+                self.environment_worker.wait(2000)
         event.accept()

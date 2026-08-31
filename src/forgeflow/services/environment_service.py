@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import socket
 import subprocess
 import urllib.request
 from pathlib import Path
@@ -39,6 +40,7 @@ class EnvironmentWorker(QThread):
         )
         checks["unirig"] = self._unirig_check()
         checks["ollama"] = self._ollama_check()
+        checks["unity_mcp"] = self._unity_mcp_check()
         if checks["agent"]["ok"] and checks["mcp_project"]["ok"]:
             try:
                 adapter = BlenderAdapter(self.config, JobService(self.config.jobs_root))
@@ -127,3 +129,53 @@ class EnvironmentWorker(QThread):
             return {"ok": ok, "detail": self.config.ollama_model if ok else f"모델 없음: {self.config.ollama_model}"}
         except Exception as exc:
             return {"ok": False, "detail": str(exc)}
+
+    def _unity_mcp_check(self) -> dict[str, Any]:
+        server = self.config.unity_mcp_root / "server.py"
+        if not server.is_file():
+            return {"ok": False, "detail": f"Unity MCP 서버 없음: {server}"}
+
+        host = os.environ.get("UNITY_MCP_HOST", "127.0.0.1")
+        raw_port = os.environ.get("UNITY_MCP_PORT", "8722")
+        try:
+            port = int(raw_port)
+        except ValueError:
+            return {"ok": False, "detail": f"UNITY_MCP_PORT가 올바르지 않음: {raw_port}"}
+
+        request = json.dumps({"command": "ping", "params": {}}).encode("utf-8") + b"\n"
+        try:
+            with socket.create_connection((host, port), timeout=3.0) as connection:
+                connection.settimeout(3.0)
+                connection.sendall(request)
+                response = bytearray()
+                while b"\n" not in response:
+                    chunk = connection.recv(65536)
+                    if not chunk:
+                        break
+                    response.extend(chunk)
+                    if len(response) > 1024 * 1024:
+                        raise ValueError("Unity MCP ping 응답이 너무 큽니다.")
+        except (OSError, TimeoutError) as exc:
+            return {
+                "ok": False,
+                "detail": f"서버 확인됨 · Unity Editor Bridge 연결 실패({host}:{port}): {exc}",
+            }
+
+        if not response:
+            return {"ok": False, "detail": f"Unity Editor Bridge의 ping 응답이 없음: {host}:{port}"}
+        try:
+            payload = json.loads(bytes(response).split(b"\n", 1)[0].decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            return {"ok": False, "detail": f"Unity MCP ping 응답 형식 오류: {exc}"}
+        if payload.get("status") != "ok" or not isinstance(payload.get("result"), dict):
+            return {"ok": False, "detail": str(payload.get("error") or "Unity MCP ping 실패")}
+
+        result = payload["result"]
+        product = result.get("productName") or "Unity Editor"
+        version = result.get("unityVersion") or "버전 미상"
+        actual_port = result.get("port", port)
+        project = result.get("projectPath")
+        detail = f"{product} · Unity {version} · {host}:{actual_port}"
+        if project:
+            detail += f"\n프로젝트: {project}"
+        return {"ok": True, "detail": detail, "project_path": project, "port": actual_port}

@@ -38,6 +38,24 @@ ForgeFlow는 기존 Pixal3D 이미지→3D 생성기, 승인 기반 Blender 자�
 
 앱의 `설정`에서 다음 실행부터 사용할 프로젝트 경로, Blender 실행 파일, 작업 루트, Ollama 주소/모델을 저장할 수 있습니다. ForgeFlow는 기존 시스템에서 확인한 `qwen3-coder:30b`와 설치된 Blender 5.2 경로를 기본값으로 사용하며 기존 프로젝트 설정 파일을 수정하지 않습니다.
 
+### Windows EXE
+
+처음 한 번만 프로젝트 루트에서 다음 명령으로 빌드합니다.
+
+```powershell
+python -m pip install -e ".[build]"
+powershell -ExecutionPolicy Bypass -File .\scripts\build_exe.ps1
+```
+
+완료되면 `dist\ForgeFlow.exe`를 더블클릭해 실행할 수 있습니다. 콘솔 창은 열리지 않으며, 단일 EXE에 PySide6와 ForgeFlow 코드가 포함됩니다. 앱 설정과 작업 데이터는 기존과 동일하게 `Documents\ForgeFlow` 아래에 유지되므로 EXE를 다시 빌드해도 사라지지 않습니다.
+
+소스에서 직접 실행하려면 다음 명령을 사용합니다.
+
+```powershell
+python -m pip install -e ".[dev]"
+forgeflow
+```
+
 ## 사용자 흐름
 
 1. `새 작업`에서 이미지와 작업 이름을 선택합니다.
