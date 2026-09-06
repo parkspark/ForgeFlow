@@ -6,6 +6,11 @@ ForgeFlow는 기존 Pixal3D 이미지→3D 생성기, 승인 기반 Blender 자�
 
 이전에 만들었던 모듈들을 합쳐, 하나의 앱에서 이미지를 넣어서 모델링 생성, 모델링 수정, Unity에서 리깅 및 애니메이션까지 한 곳에서 컨트롤할 수 있도록 통합화 중입니다.
 
+<p align="center">
+  <img src="readme_image/theme_light.png" alt="ForgeFlow에서 이미지 기반 3D 모델을 생성하고 Blender 편집, Humanoid 리깅, Unity 제어까지 연결하는 화면" width="100%">
+</p>
+<p align="center"><sub>이미지 입력 → 3D 모델 생성 → Blender 편집 → Humanoid 리깅 → Unity 텍스트 제어</sub></p>
+
 - **Image-to-3D Generation**: https://github.com/parkspark/modeling_local_mcp
 - **Blender Control & Refinement**: https://github.com/parkspark/blender-control-mcp
 - **Unity Rigging & Animation**: https://github.com/parkspark/unity_local_mcp
