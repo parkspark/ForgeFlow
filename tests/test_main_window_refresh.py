@@ -1,16 +1,50 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
 from forgeflow.ui.main_window import MainWindow
+from forgeflow.config import AppConfig
 
 
 _APP = QApplication.instance() or QApplication([])
 _APP.setQuitOnLastWindowClosed(False)
+
+
+def test_saved_settings_survive_theme_change_and_reopening(config, tmp_path, monkeypatch):
+    window = MainWindow(config, run_environment_checks=False)
+    updated = replace(config, unity_agent_model="new-model", jobs_root=tmp_path / "new-jobs")
+    opened = []
+
+    class Dialog:
+        def __init__(self, original, parent):
+            opened.append(original)
+
+        def exec(self):
+            return len(opened) == 1
+
+        def value(self, original):
+            return updated
+
+    monkeypatch.setattr("forgeflow.ui.main_window.SettingsDialog", Dialog)
+    monkeypatch.setattr("forgeflow.ui.main_window.QMessageBox.information", lambda *args: None)
+    try:
+        window.edit_settings()
+        window.theme_selector.setCurrentIndex(window.theme_selector.findData("light"))
+        saved = AppConfig.load()
+        assert saved.unity_agent_model == "new-model"
+        assert saved.jobs_root == updated.jobs_root
+        assert saved.theme == "light"
+        window.edit_settings()
+        assert opened[-1] == saved
+        assert window.config.jobs_root == config.jobs_root
+        assert window.unity.config.unity_agent_model == config.unity_agent_model
+    finally:
+        window.close()
 
 
 def test_job_change_updates_cached_list_without_full_disk_reload(config, image, monkeypatch):

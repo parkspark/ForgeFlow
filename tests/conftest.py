@@ -8,7 +8,8 @@ from forgeflow.config import AppConfig
 
 
 @pytest.fixture
-def config(tmp_path: Path) -> AppConfig:
+def config(tmp_path: Path, monkeypatch) -> AppConfig:
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
     modeling = tmp_path / "modeling"
     agent = tmp_path / "agent"
     mcp = tmp_path / "mcp"
@@ -30,4 +31,3 @@ def image(tmp_path: Path) -> Path:
     path = tmp_path / "입력 이미지.PNG"
     path.write_bytes(b"fake-png-content")
     return path
-

@@ -31,3 +31,12 @@ def test_theme_selection_persists_and_invalid_value_falls_back(config: AppConfig
     selected.config_path.write_text(json.dumps(payload), encoding="utf-8")
     assert AppConfig.load(selected.config_path).theme == "dark"
     assert normalize_theme("unknown") == "dark"
+
+
+def test_config_location_survives_jobs_root_change(config, tmp_path):
+    config.save()
+    updated = replace(config, jobs_root=tmp_path / "elsewhere" / "jobs")
+    updated.save()
+    assert updated.config_path == config.config_path
+    assert AppConfig.load().jobs_root == updated.jobs_root
+    assert not (updated.jobs_root.parent / "config.json").exists()

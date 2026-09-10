@@ -53,7 +53,7 @@ class AppConfig:
 
     @property
     def config_path(self) -> Path:
-        return self.jobs_root.parent / "config.json"
+        return Path.home() / "Documents" / "ForgeFlow" / "config.json"
 
     def save(self) -> None:
         self.config_path.parent.mkdir(parents=True, exist_ok=True)

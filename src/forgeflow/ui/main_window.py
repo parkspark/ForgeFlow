@@ -35,6 +35,7 @@ class MainWindow(QMainWindow):
     def __init__(self, config: AppConfig | None = None, *, run_environment_checks: bool = True):
         super().__init__()
         self.config = config or AppConfig.load()
+        self.saved_config = self.config
         self.jobs = JobService(self.config.jobs_root)
         self.job_list = self.jobs.recover_interrupted()
         self.current_job: Job | None = None
@@ -161,7 +162,9 @@ class MainWindow(QMainWindow):
             return
         self.config = replace(self.config, theme=name)
         try:
-            self.config.save()
+            updated = replace(self.saved_config, theme=name)
+            updated.save()
+            self.saved_config = updated
             self.statusBar().showMessage(
                 f"{'라이트' if name == 'light' else '다크'} 테마를 적용하고 저장했습니다.", 5000
             )
@@ -485,10 +488,15 @@ class MainWindow(QMainWindow):
         widget.update()
 
     def edit_settings(self) -> None:
-        dialog = SettingsDialog(self.config, self)
+        dialog = SettingsDialog(self.saved_config, self)
         if dialog.exec():
-            updated = dialog.value(self.config)
-            updated.save()
+            updated = dialog.value(self.saved_config)
+            try:
+                updated.save()
+            except OSError as exc:
+                QMessageBox.warning(self, "설정 저장 실패", str(exc))
+                return
+            self.saved_config = updated
             QMessageBox.information(self, "설정 저장", "설정을 저장했습니다. 안전한 적용을 위해 ForgeFlow를 다시 실행해 주세요.")
 
     def closeEvent(self, event) -> None:
