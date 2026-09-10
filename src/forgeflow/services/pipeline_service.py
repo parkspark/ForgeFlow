@@ -52,16 +52,33 @@ class PipelineService(QObject):
         return self.process.running or self._handler is not None
 
     def start_modeling(self, job: Job) -> None:
+        if self.busy:
+            raise RuntimeError("다른 작업이 실행 중입니다.")
+        releases = self.modeling.build_release_ollama()
         if job.stages["modeling"].status == "completed":
             raise RuntimeError("완료된 모델링 원본은 덮어쓸 수 없습니다.")
         command, run_root = self.modeling.build_generation(job)
         log_path = self.jobs.job_directory(job.job_id) / "logs" / f"modeling-attempt-{job.stages['modeling'].attempts + 1:03d}.log"
         self.jobs.set_stage(job, "modeling", "running", log_path=log_path)
-        release = self.modeling.build_release_ollama()
-        if release is not None:
-            self._begin(job, "modeling_vram", release, log_path, lambda _code: self._begin(job, "modeling", command, log_path, lambda code: self._generation_finished(job, run_root, code)))
-        else:
-            self._begin(job, "modeling", command, log_path, lambda code: self._generation_finished(job, run_root, code))
+        self._release_models(job, "modeling", releases, log_path,
+            lambda: self._begin(job, "modeling", command, log_path, lambda code: self._generation_finished(job, run_root, code)),
+            lambda message: self._fail_stage(job, "modeling", message))
+
+    def _release_models(self, job, stage, commands, log_path, on_ready, on_failure) -> None:
+        if not commands:
+            on_ready()
+            return
+        command = commands[0]
+        model = command.arguments[-1]
+        self.log_received.emit(f"[VRAM] Ollama 모델 해제: {model}")
+
+        def finished(code):
+            if code != 0:
+                on_failure(f"Ollama 모델 VRAM 해제 실패: {model} (종료 코드 {code})")
+                return
+            self._release_models(job, stage, commands[1:], log_path, on_ready, on_failure)
+
+        self._begin(job, stage + "_vram", command, log_path, finished)
 
     def _generation_finished(self, job: Job, run_root: Path, exit_code: int) -> None:
         if exit_code != 0:
@@ -176,6 +193,7 @@ class PipelineService(QObject):
     def start_rigging(self, job: Job, selected_input: str | Path | None = None, seed: int | str = 12345) -> None:
         if self.busy:
             raise RuntimeError("다른 작업이 실행 중입니다.")
+        releases = self.modeling.build_release_ollama()
         command, run = self.rigging.build_rigging(job, selected_input, seed)
         request = run.request
         request.status = "running"
@@ -184,17 +202,9 @@ class PipelineService(QObject):
         self.jobs.add_rigging_request(job, request)
         log_path = run.final_directory / "rigging.log"
         self.jobs.set_stage(job, "rigging", "running", log_path=log_path)
-        release = self.modeling.build_release_ollama()
-        if release is not None:
-            self._begin(
-                job, "rigging_vram", release, log_path,
-                lambda _code: self._begin(
-                    job, "rigging", command, log_path,
-                    lambda code: self._rigging_finished(job, run, code),
-                ),
-            )
-        else:
-            self._begin(job, "rigging", command, log_path, lambda code: self._rigging_finished(job, run, code))
+        self._release_models(job, "rigging", releases, log_path,
+            lambda: self._begin(job, "rigging", command, log_path, lambda code: self._rigging_finished(job, run, code)),
+            lambda message: self._fail_rigging(job, run, message))
 
     def _rigging_finished(self, job: Job, run: RiggingRun, exit_code: int) -> None:
         if exit_code != 0:
@@ -316,7 +326,7 @@ class PipelineService(QObject):
                         self.jobs.save(job)
                     self.operation_finished.emit("rigging", True, request.preview_warning if request else "미리보기 취소")
                     return
-                if job and self._operation in {"modeling", "modeling_preview", "blender", "rigging", "rigging_vram"}:
+                if job and self._operation in {"modeling", "modeling_vram", "modeling_preview", "blender", "rigging", "rigging_vram"}:
                     if self._operation.startswith("modeling"):
                         stage = "modeling"
                     elif self._operation.startswith("rigging"):
@@ -342,7 +352,7 @@ class PipelineService(QObject):
         handler, self._handler = self._handler, None
         try:
             job = self._active_job
-            if job and self._operation in {"modeling", "modeling_preview", "blender", "rigging", "rigging_vram"}:
+            if job and self._operation in {"modeling", "modeling_vram", "modeling_preview", "blender", "rigging", "rigging_vram"}:
                 if self._operation.startswith("modeling"):
                     stage = "modeling"
                 elif self._operation.startswith("rigging"):

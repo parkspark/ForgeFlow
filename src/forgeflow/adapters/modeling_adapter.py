@@ -18,11 +18,25 @@ class ModelingAdapter:
         self.config = config
         self.jobs = jobs
 
-    def build_release_ollama(self) -> ProcessCommand | None:
+    def build_release_ollama(self) -> list[ProcessCommand]:
         executable = shutil.which("ollama")
         if not executable:
-            return None
-        return ProcessCommand(executable, ["stop", self.config.ollama_model], self.config.modeling_root)
+            raise RuntimeError("Ollama 실행 파일을 찾을 수 없어 VRAM을 해제할 수 없습니다.")
+        commands = []
+        seen = set()
+        for host, model in (
+            (self.config.ollama_base_url, self.config.ollama_model),
+            (os.environ.get("OLLAMA_HOST") or "http://127.0.0.1:11434", self.config.unity_agent_model),
+        ):
+            host = host.rstrip("/")
+            normalized_model = model if ":" in model.rsplit("/", 1)[-1] else model + ":latest"
+            if (host, normalized_model) in seen:
+                continue
+            seen.add((host, normalized_model))
+            environment = dict(os.environ)
+            environment["OLLAMA_HOST"] = host
+            commands.append(ProcessCommand(executable, ["stop", model], self.config.modeling_root, environment))
+        return commands
 
     def build_generation(self, job: Job) -> tuple[ProcessCommand, Path]:
         image = self.jobs.validate_image(job.input_image_path)

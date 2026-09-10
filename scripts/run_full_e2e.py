@@ -39,9 +39,9 @@ def main() -> int:
     root = jobs.job_directory(job.job_id)
     evidence: dict = {"status": "running", "job_directory": str(root), "input_image": job.input_image_path}
 
-    release = modeling.build_release_ollama()
-    if release:
-        run(release, root / "logs" / "ollama-vram-release.log", 120)
+    for index, release in enumerate(modeling.build_release_ollama()):
+        if run(release, root / "logs" / f"ollama-vram-release-{index}.log", 120) != 0:
+            raise RuntimeError("Ollama VRAM release failed")
     command, run_root = modeling.build_generation(job)
     jobs.set_stage(job, "modeling", "running", log_path=root / "logs" / "modeling.log")
     if run(command, root / "logs" / "modeling.log") != 0:
@@ -123,4 +123,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

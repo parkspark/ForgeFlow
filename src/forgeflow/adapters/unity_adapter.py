@@ -82,6 +82,10 @@ class UnityAdapter(QObject):
     def ready(self) -> bool:
         return self.running and self.session is not None and self.session.status == "ready"
 
+    @property
+    def busy(self) -> bool:
+        return self.running and (not self.ready or self._active_turn is not None)
+
     @staticmethod
     def validate_project(project_path: str | Path) -> Path:
         project = Path(project_path).expanduser().resolve(strict=True)

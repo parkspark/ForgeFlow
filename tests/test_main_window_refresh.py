@@ -33,6 +33,30 @@ def test_model_status_shows_each_model_and_missing_state(config):
         window.close()
 
 
+def test_gpu_start_waits_for_unity_and_unity_waits_for_pipeline(config, image, monkeypatch):
+    from forgeflow.adapters.unity_adapter import UnityAdapter
+    from forgeflow.services.pipeline_service import PipelineService
+
+    window = MainWindow(config, run_environment_checks=False)
+    window.current_job = window.jobs.create("gpu-guard", image)
+    warnings = []
+    monkeypatch.setattr("forgeflow.ui.main_window.QMessageBox.warning", lambda *args: warnings.append(args))
+    monkeypatch.setattr(UnityAdapter, "busy", property(lambda self: True))
+    monkeypatch.setattr(window.pipeline, "start_modeling", lambda *args: (_ for _ in ()).throw(AssertionError("started")))
+    try:
+        window.start_modeling()
+        window.start_rigging("unused.glb", 1)
+        assert len(warnings) == 2
+        monkeypatch.setattr(PipelineService, "busy", property(lambda self: True))
+        window.send_unity_prompt("test", False, False, False)
+        window.repair_unity_turn("turn", "test", False, False, False)
+        window.connect_unity("unused")
+        assert len(warnings) == 5
+    finally:
+        monkeypatch.undo()
+        window.close()
+
+
 def test_saved_settings_survive_theme_change_and_reopening(config, tmp_path, monkeypatch):
     window = MainWindow(config, run_environment_checks=False)
     updated = replace(config, unity_agent_model="new-model", jobs_root=tmp_path / "new-jobs")

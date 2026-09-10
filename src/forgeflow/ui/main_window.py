@@ -256,6 +256,8 @@ class MainWindow(QMainWindow):
         self.unity_panel.choose_project()
 
     def connect_unity(self, project_path: str) -> None:
+        if self._unity_blocked_by_pipeline():
+            return
         if not self.current_job:
             QMessageBox.warning(self, "Unity 연결", "먼저 ForgeFlow Job을 선택하세요.")
             return
@@ -299,6 +301,8 @@ class MainWindow(QMainWindow):
     def send_unity_prompt(
         self, text: str, include_asset: bool, include_scene: bool, analyze_screenshot: bool
     ) -> None:
+        if self._unity_blocked_by_pipeline():
+            return
         if not self.current_job:
             return
         if not self.unity.job or self.unity.job.job_id != self.current_job.job_id:
@@ -335,6 +339,8 @@ class MainWindow(QMainWindow):
         self, turn_id: str, feedback: str, include_asset: bool,
         include_scene: bool, analyze_screenshot: bool,
     ) -> None:
+        if self._unity_blocked_by_pipeline():
+            return
         try:
             self.unity.send_review_repair(
                 turn_id, feedback, include_asset=include_asset,
@@ -374,6 +380,8 @@ class MainWindow(QMainWindow):
 
     def start_modeling(self) -> None:
         if not self.current_job or self.pipeline.busy:
+            return
+        if self._gpu_blocked_by_unity():
             return
         try:
             self.pipeline.start_modeling(self.current_job)
@@ -419,6 +427,8 @@ class MainWindow(QMainWindow):
     def start_rigging(self, selected_input: str, seed: int) -> None:
         if not self.current_job or self.pipeline.busy:
             return
+        if self._gpu_blocked_by_unity():
+            return
         version = self.jobs.next_rigging_version(self.current_job)
         output = self.jobs.job_directory(self.current_job.job_id) / "rigging" / f"v{version:03d}"
         answer = QMessageBox.question(
@@ -431,6 +441,8 @@ class MainWindow(QMainWindow):
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
+        if self._gpu_blocked_by_unity():
+            return
         try:
             self.rigging_panel.clear_log()
             self.pipeline.start_rigging(self.current_job, selected_input, seed)
@@ -438,6 +450,18 @@ class MainWindow(QMainWindow):
             self._render_job()
         except Exception as exc:
             QMessageBox.critical(self, "자동 리깅 시작 실패", str(exc))
+
+    def _unity_blocked_by_pipeline(self) -> bool:
+        if self.pipeline.busy:
+            QMessageBox.warning(self, "Unity 작업 대기", "모델링·Blender·리깅 작업이 끝난 뒤 Unity 명령을 실행하세요.")
+            return True
+        return False
+
+    def _gpu_blocked_by_unity(self) -> bool:
+        if self.unity.busy:
+            QMessageBox.warning(self, "GPU 작업 대기", "Unity 연결 또는 명령 처리 중입니다. 완료되거나 취소한 뒤 실행하세요.")
+            return True
+        return False
 
     def _job_changed(self, job: Job) -> None:
         is_current = bool(self.current_job and self.current_job.job_id == job.job_id)

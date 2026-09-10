@@ -106,10 +106,10 @@ def main() -> int:
             with log_path.open("a", encoding="utf-8") as handle:
                 handle.write(rendered + "\n")
 
-        release = modeling.build_release_ollama()
-        if release is not None:
+        for release in modeling.build_release_ollama():
             print("[ForgeFlow] Ollama VRAM release", flush=True)
-            SyncProcessRunner().run(release, log_line)
+            if SyncProcessRunner().run(release, log_line, timeout=120) != 0:
+                raise RuntimeError("Ollama VRAM release failed")
         print(f"[ForgeFlow] UniRig start: {asset}", flush=True)
         exit_code = SyncProcessRunner().run(command, log_line)
         evidence["exit_code"] = exit_code
