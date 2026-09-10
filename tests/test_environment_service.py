@@ -1,9 +1,42 @@
 from __future__ import annotations
 
 import json
+import io
 from dataclasses import replace
 
 from forgeflow.services.environment_service import EnvironmentWorker
+
+
+def test_ollama_checks_models_independently(config, monkeypatch):
+    monkeypatch.delenv("OLLAMA_HOST", raising=False)
+    requests = []
+
+    def tags(url, timeout):
+        requests.append(url)
+        return io.StringIO(json.dumps({"models": [{"name": "test-model:latest"}]}))
+
+    monkeypatch.setattr("urllib.request.urlopen", tags)
+    checks = EnvironmentWorker(config)._ollama_checks()
+    assert checks["ollama_blender"]["ok"] is True
+    assert checks["ollama_unity"]["ok"] is False
+    assert checks["ollama_unity"]["status"] == "모델 없음"
+    assert checks["ollama_unity"]["model"] == config.unity_agent_model
+    assert len(requests) == 1
+
+
+def test_ollama_checks_use_unity_endpoint_and_distinguish_connection_failure(config, monkeypatch):
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:12345")
+
+    def tags(url, timeout):
+        if "12345" in url:
+            raise ConnectionRefusedError("offline")
+        return io.StringIO(json.dumps({"models": [{"name": config.ollama_model}]}))
+
+    monkeypatch.setattr("urllib.request.urlopen", tags)
+    checks = EnvironmentWorker(config)._ollama_checks()
+    assert checks["ollama_blender"]["ok"] is True
+    assert checks["ollama_unity"]["status"] == "서버 연결 실패"
+    assert "http://localhost:12345" in checks["ollama_unity"]["detail"]
 
 
 class FakeSocket:

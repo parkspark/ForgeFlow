@@ -15,6 +15,24 @@ _APP = QApplication.instance() or QApplication([])
 _APP.setQuitOnLastWindowClosed(False)
 
 
+def test_model_status_shows_each_model_and_missing_state(config):
+    window = MainWindow(config, run_environment_checks=False)
+    try:
+        window._environment_ready({
+            "ollama_blender": {"ok": True, "status": "설치됨", "detail": "ready"},
+            "ollama_unity": {"ok": False, "status": "모델 없음", "detail": "missing"},
+        })
+        blender = window.environment_labels["ollama_blender"]
+        unity = window.environment_labels["ollama_unity"]
+        assert config.ollama_model in blender.text()
+        assert "설치됨" in blender.text()
+        assert config.unity_agent_model in unity.text()
+        assert "모델 없음" in unity.text()
+        assert unity.property("envState") == "error"
+    finally:
+        window.close()
+
+
 def test_saved_settings_survive_theme_change_and_reopening(config, tmp_path, monkeypatch):
     window = MainWindow(config, run_environment_checks=False)
     updated = replace(config, unity_agent_model="new-model", jobs_root=tmp_path / "new-jobs")

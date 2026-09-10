@@ -61,11 +61,13 @@ class MainWindow(QMainWindow):
         central = QWidget()
         root = QVBoxLayout(central)
         environment_box = QGroupBox("환경 연결 상태")
-        env_layout = QHBoxLayout(environment_box)
+        env_root = QVBoxLayout(environment_box)
+        env_layout = QHBoxLayout()
+        env_root.addLayout(env_layout)
         self.environment_labels = {}
         for key, label in (
             ("modeling", "Pixal3D"), ("gpu", "GPU"), ("wsl", "WSL"),
-            ("ollama", "Ollama"), ("mcp", "Blender MCP"), ("unirig", "UniRig"),
+            ("mcp", "Blender MCP"), ("unirig", "UniRig"),
             ("blender", "Blender"), ("unity_mcp", "Unity MCP"),
         ):
             widget = QLabel(f"● {label}: 확인 중")
@@ -86,6 +88,17 @@ class MainWindow(QMainWindow):
         self.cancel_button.setEnabled(False)
         env_layout.addWidget(self.refresh_environment_button)
         env_layout.addWidget(self.cancel_button)
+        model_layout = QHBoxLayout()
+        env_root.addLayout(model_layout)
+        for key, title, model in (
+            ("ollama_blender", "Blender 모델", self.config.ollama_model),
+            ("ollama_unity", "Unity 모델", self.config.unity_agent_model),
+        ):
+            widget = QLabel(f"● {title}: 확인 중\n{model}")
+            widget.setWordWrap(True)
+            widget.setProperty("envState", "checking")
+            self.environment_labels[key] = widget
+            model_layout.addWidget(widget, 1)
         root.addWidget(environment_box)
         splitter = QSplitter()
         self.project_panel = ProjectPanel()
@@ -462,7 +475,8 @@ class MainWindow(QMainWindow):
             return
         self.refresh_environment_button.setEnabled(False)
         for label in self.environment_labels.values():
-            label.setText(label.text().split(":")[0] + ": 확인 중")
+            heading, separator, model = label.text().partition("\n")
+            label.setText(heading.split(":")[0] + ": 확인 중" + (separator + model if separator else ""))
             label.setProperty("envState", "checking")
             self._refresh_widget_style(label)
         self.environment_worker = EnvironmentWorker(self.config, self)
@@ -471,12 +485,16 @@ class MainWindow(QMainWindow):
         self.environment_worker.start()
 
     def _environment_ready(self, checks: dict) -> None:
-        names = {"modeling": "Pixal3D", "gpu": "GPU", "wsl": "WSL", "ollama": "Ollama",
+        names = {"modeling": "Pixal3D", "gpu": "GPU", "wsl": "WSL",
+                 "ollama_blender": "Blender 모델", "ollama_unity": "Unity 모델",
                  "mcp": "Blender MCP", "unirig": "UniRig", "blender": "Blender",
                  "unity_mcp": "Unity MCP"}
         for key, label in self.environment_labels.items():
             check = checks.get(key, {"ok": False, "detail": "점검 결과 없음"})
             label.setText(f"{'●' if check['ok'] else '○'} {names[key]}: {'연결됨' if check['ok'] else '실패'}")
+            if key in {"ollama_blender", "ollama_unity"}:
+                model = self.config.ollama_model if key == "ollama_blender" else self.config.unity_agent_model
+                label.setText(f"{'●' if check['ok'] else '○'} {names[key]}: {check.get('status', '점검 실패')}\n{model}")
             label.setToolTip(str(check["detail"]))
             label.setProperty("envState", "ok" if check["ok"] else "error")
             self._refresh_widget_style(label)

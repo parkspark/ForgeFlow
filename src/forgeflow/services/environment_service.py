@@ -39,7 +39,7 @@ class EnvironmentWorker(QThread):
             [shutil.which("wsl") or "wsl.exe", "-d", "Ubuntu-24.04", "-u", "park", "--", "printf", "ready"], 20
         )
         checks["unirig"] = self._unirig_check()
-        checks["ollama"] = self._ollama_check()
+        checks.update(self._ollama_checks())
         checks["unity_mcp"] = self._unity_mcp_check()
         checks["mcp"] = self._blender_mcp_check(
             checks["agent"]["ok"] and checks["mcp_project"]["ok"]
@@ -129,15 +129,34 @@ class EnvironmentWorker(QThread):
         except Exception as exc:
             return {"ok": False, "detail": str(exc)}
 
-    def _ollama_check(self) -> dict[str, Any]:
-        try:
-            with urllib.request.urlopen(self.config.ollama_base_url + "/api/tags", timeout=5) as response:
-                payload = json.load(response)
-            names = {item.get("name") for item in payload.get("models", [])}
-            ok = self.config.ollama_model in names
-            return {"ok": ok, "detail": self.config.ollama_model if ok else f"모델 없음: {self.config.ollama_model}"}
-        except Exception as exc:
-            return {"ok": False, "detail": str(exc)}
+    def _ollama_checks(self) -> dict[str, dict[str, Any]]:
+        # Unity uses ollama.AsyncClient(), whose endpoint comes from OLLAMA_HOST.
+        unity_url = os.environ.get("OLLAMA_HOST") or "http://127.0.0.1:11434"
+        if "://" not in unity_url:
+            unity_url = "http://" + unity_url
+        results = {}
+        endpoints: dict[str, tuple[set[str], str | None]] = {}
+        for key, model, base_url in (
+            ("ollama_blender", self.config.ollama_model, self.config.ollama_base_url),
+            ("ollama_unity", self.config.unity_agent_model, unity_url),
+        ):
+            base_url = base_url.rstrip("/")
+            if base_url not in endpoints:
+                try:
+                    with urllib.request.urlopen(base_url + "/api/tags", timeout=5) as response:
+                        payload = json.load(response)
+                    endpoints[base_url] = ({item.get("name") for item in payload.get("models", [])}, None)
+                except Exception as exc:
+                    endpoints[base_url] = (set(), str(exc))
+            names, error = endpoints[base_url]
+            tag = model if ":" in model.rsplit("/", 1)[-1] else model + ":latest"
+            ok = error is None and (model in names or tag in names)
+            status = "서버 연결 실패" if error is not None else ("설치됨" if ok else "모델 없음")
+            detail = f"{model}\n{base_url}\n{status}"
+            if error is not None:
+                detail += f": {error}"
+            results[key] = {"ok": ok, "model": model, "status": status, "detail": detail}
+        return results
 
     def _unity_mcp_check(self) -> dict[str, Any]:
         server = self.config.unity_mcp_root / "server.py"
