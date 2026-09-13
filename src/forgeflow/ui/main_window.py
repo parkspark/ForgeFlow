@@ -24,6 +24,7 @@ from forgeflow.services.pipeline_service import PipelineService
 from .blender_panel import BlenderPanel
 from .log_panel import LogPanel
 from .progress_panel import ProgressPanel
+from .next_step_panel import NextStepPanel
 from .modeling_panel import ModelingPanel
 from .project_panel import ProjectPanel
 from .rigging_panel import RiggingPanel
@@ -109,6 +110,17 @@ class MainWindow(QMainWindow):
         self.rigging_panel = RiggingPanel()
         self.unity_panel = UnityPanel()
         self.log_panel = LogPanel()
+        self.next_steps = {}
+        for key, panel, actions in (
+            ("modeling", self.modeling_panel, [("blender", "Blender에서 편집"), ("rigging", "바로 리깅으로 이동")]),
+            ("blender", self.blender_panel, [("rigging", "리깅으로 이동")]),
+            ("rigging", self.rigging_panel, [("unity", "Unity에서 사용")]),
+        ):
+            card = NextStepPanel(actions)
+            panel.layout().addWidget(card)
+            self.next_steps[key] = card
+            for target, button in card.buttons.items():
+                button.clicked.connect(lambda checked=False, destination=target: self.go_to_next_step(destination))
         self.tabs.addTab(self.modeling_panel, "1. 이미지 → 3D")
         self.tabs.addTab(self.blender_panel, "2. Blender 자연어 편집")
         self.tabs.addTab(self.rigging_panel, "3. Humanoid 리깅")
@@ -260,6 +272,51 @@ class MainWindow(QMainWindow):
         else:
             self.unity_panel.set_session(None)
         self.cancel_button.setEnabled(self.pipeline.busy)
+        self._update_next_steps()
+
+    @staticmethod
+    def _usable_result(value, suffix) -> bool:
+        try:
+            path = Path(value) if value else None
+            return bool(path and path.suffix.lower() == suffix and path.is_file() and path.stat().st_size > 0)
+        except OSError:
+            return False
+
+    def _next_step_availability(self):
+        job = self.current_job
+        if job is None:
+            return {key: (False, "먼저 작업을 선택하세요.") for key in ("blender", "rigging", "unity")}
+        if self.pipeline.busy:
+            return {key: (False, "실행 중인 작업이 끝나면 이동할 수 있습니다.") for key in ("blender", "rigging", "unity")}
+        return {
+            "blender": (self._usable_result(job.blender_input_path, ".glb"), "모델 생성 후 사용할 GLB 파일이 필요합니다."),
+            "rigging": (any(self._usable_result(item.path, ".glb") for item in self.pipeline.rigging.available_inputs(job)), "이 작업에 등록된 GLB 결과가 필요합니다."),
+            "unity": (self._usable_result(job.unity_input_path, ".fbx"), "리깅으로 생성된 Humanoid FBX 결과가 필요합니다."),
+        }
+
+    def _update_next_steps(self):
+        states = self._next_step_availability()
+        instructions = {
+            "modeling": "GLB 결과를 Blender에서 편집하세요. 편집이 필요 없으면 사람형 모델을 바로 리깅할 수 있습니다.",
+            "blender": "리깅 화면에서 사용할 GLB 버전과 사람형 여부를 확인한 뒤 실행하세요.",
+            "rigging": "Unity 화면에서 프로젝트를 선택·연결한 뒤 ‘Unity 프로젝트로 가져오기’로 결과를 가져오세요.",
+        }
+        for source, card in self.next_steps.items():
+            selected = {key: states[key] for key in card.buttons}
+            ready = any(enabled for enabled, reason in selected.values())
+            reason = next(iter(selected.values()))[1]
+            card.update_state(instructions[source] if ready else reason,
+                {key: (enabled, instructions[source] if enabled else message) for key, (enabled, message) in selected.items()})
+
+    def go_to_next_step(self, destination):
+        self._update_next_steps()
+        enabled, reason = self._next_step_availability()[destination]
+        if not enabled:
+            self.statusBar().showMessage(reason, 10000)
+            return
+        panels = {"blender": self.blender_panel, "rigging": self.rigging_panel, "unity": self.unity_panel}
+        self._render_job()
+        self.tabs.setCurrentWidget(panels[destination])
 
     def choose_unity_project(self) -> None:
         self.unity_panel.choose_project()
