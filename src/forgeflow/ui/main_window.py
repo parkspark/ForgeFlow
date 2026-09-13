@@ -7,7 +7,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QComboBox, QFileDialog, QGroupBox, QHBoxLayout, QInputDialog, QLabel,
+    QComboBox, QFileDialog, QGridLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel,
     QMainWindow, QMessageBox, QPushButton, QSplitter, QTabWidget, QVBoxLayout, QWidget,
 )
 
@@ -66,6 +66,19 @@ class MainWindow(QMainWindow):
         env_root = QVBoxLayout(environment_box)
         env_layout = QHBoxLayout()
         env_root.addLayout(env_layout)
+        self.environment_summary = QLabel("환경 확인 전")
+        self.environment_summary.setProperty("envState", "checking")
+        env_layout.addWidget(self.environment_summary)
+        self.environment_toggle = QPushButton("상세 보기")
+        self.environment_toggle.setCheckable(True)
+        env_layout.addWidget(self.environment_toggle)
+        self.environment_details = QWidget()
+        detail_layout = QVBoxLayout(self.environment_details)
+        detail_layout.setContentsMargins(0, 0, 0, 0)
+        connections = QGridLayout()
+        detail_layout.addLayout(connections)
+        self.environment_details.hide()
+        self.environment_toggle.toggled.connect(self._toggle_environment_details)
         self.environment_labels = {}
         for key, label in (
             ("modeling", "Pixal3D"), ("gpu", "GPU"), ("wsl", "WSL"),
@@ -75,7 +88,8 @@ class MainWindow(QMainWindow):
             widget = QLabel(f"● {label}: 확인 중")
             widget.setProperty("envState", "checking")
             self.environment_labels[key] = widget
-            env_layout.addWidget(widget)
+            index = len(self.environment_labels) - 1
+            connections.addWidget(widget, index // 4, index % 4)
         env_layout.addStretch()
         env_layout.addWidget(QLabel("테마"))
         self.theme_selector = QComboBox()
@@ -89,7 +103,7 @@ class MainWindow(QMainWindow):
         env_layout.addWidget(self.refresh_environment_button)
 
         model_layout = QHBoxLayout()
-        env_root.addLayout(model_layout)
+        detail_layout.addLayout(model_layout)
         for key, title, model in (
             ("ollama_blender", "Blender 모델", self.config.ollama_model),
             ("ollama_unity", "Unity 모델", self.config.unity_agent_model),
@@ -99,6 +113,7 @@ class MainWindow(QMainWindow):
             widget.setProperty("envState", "checking")
             self.environment_labels[key] = widget
             model_layout.addWidget(widget, 1)
+        env_root.addWidget(self.environment_details)
         root.addWidget(environment_box)
         splitter = QSplitter()
         self.project_panel = ProjectPanel()
@@ -556,10 +571,18 @@ class MainWindow(QMainWindow):
         if self.current_job:
             os.startfile(str(self.jobs.job_directory(self.current_job.job_id)))
 
+    def _toggle_environment_details(self, expanded: bool) -> None:
+        self.environment_details.setVisible(expanded)
+        self.environment_toggle.setText("상세 접기" if expanded else "상세 보기")
+
     def refresh_environment(self) -> None:
         if self.environment_worker and self.environment_worker.isRunning():
             return
         self.refresh_environment_button.setEnabled(False)
+        self.environment_summary.setText("환경 확인 중…")
+        self.environment_summary.setToolTip("연결 상태와 설치 모델을 확인하고 있습니다.")
+        self.environment_summary.setProperty("envState", "checking")
+        self._refresh_widget_style(self.environment_summary)
         for label in self.environment_labels.values():
             heading, separator, model = label.text().partition("\n")
             label.setText(heading.split(":")[0] + ": 확인 중" + (separator + model if separator else ""))
@@ -575,6 +598,7 @@ class MainWindow(QMainWindow):
                  "ollama_blender": "Blender 모델", "ollama_unity": "Unity 모델",
                  "mcp": "Blender MCP", "unirig": "UniRig", "blender": "Blender",
                  "unity_mcp": "Unity MCP"}
+        issues = []
         for key, label in self.environment_labels.items():
             check = checks.get(key, {"ok": False, "detail": "점검 결과 없음"})
             label.setText(f"{'●' if check['ok'] else '○'} {names[key]}: {'연결됨' if check['ok'] else '실패'}")
@@ -582,8 +606,17 @@ class MainWindow(QMainWindow):
                 model = self.config.ollama_model if key == "ollama_blender" else self.config.unity_agent_model
                 label.setText(f"{'●' if check['ok'] else '○'} {names[key]}: {check.get('status', '점검 실패')}\n{model}")
             label.setToolTip(str(check["detail"]))
-            label.setProperty("envState", "ok" if check["ok"] else "error")
+            needs_attention = not check["ok"] or bool(check.get("warning"))
+            if needs_attention:
+                issues.append(f"{names[key]}: {check['detail']}")
+            if check.get("warning") and check["ok"]:
+                label.setText(label.text().replace("연결됨", "확인 필요"))
+            label.setProperty("envState", "error" if needs_attention else "ok")
             self._refresh_widget_style(label)
+        self.environment_summary.setText(f"확인 필요 {len(issues)}건" if issues else "환경 정상")
+        self.environment_summary.setToolTip("\n\n".join(issues) if issues else "연결 상태와 설치 모델 확인을 통과했습니다.")
+        self.environment_summary.setProperty("envState", "error" if issues else "ok")
+        self._refresh_widget_style(self.environment_summary)
 
     @staticmethod
     def _refresh_widget_style(widget: QWidget) -> None:
