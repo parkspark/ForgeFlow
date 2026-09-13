@@ -11,6 +11,9 @@ from PySide6.QtWidgets import (
 )
 
 
+from .status import status_text
+
+
 class RiggingPanel(QWidget):
     run_requested = Signal(str, int)
     open_file_requested = Signal(str)
@@ -158,11 +161,11 @@ class RiggingPanel(QWidget):
         detail = f" · {state.error}" if state.error else ""
         if request and request.preview_warning:
             detail += f" · 미리보기 경고: {request.preview_warning}"
-        self.status.setText(f"리깅: {state.status}{detail}")
+        self.status.setText(f"리깅: {status_text(state.status)}{detail}")
         if state.status == "completed":
             self.phase_status.setText("세부 단계: 완료")
         elif state.status in {"failed", "cancelled"}:
-            self.phase_status.setText(f"세부 단계: {state.status}")
+            self.phase_status.setText(f"세부 단계: {status_text(state.status)}")
         self.unity_path.setText("다음 Unity 입력: " + (job.unity_input_path or "없음"))
         self._fbx_path = job.humanoid_fbx_path
         self._blend_path = job.humanoid_blend_path

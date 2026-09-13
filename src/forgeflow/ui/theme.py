@@ -66,6 +66,18 @@ QStatusBar {{
     border-top: 1px solid {colors['border']};
     color: {colors['muted']};
 }}
+QLabel[statusTone] {{
+    border: 1px solid {colors['border']};
+    border-radius: 6px;
+    padding: 4px 7px;
+    background: {colors['surface_alt']};
+    font-weight: 600;
+}}
+QLabel[statusTone="neutral"] {{ color: {colors['muted']}; }}
+QLabel[statusTone="success"] {{ color: {colors['success']}; }}
+QLabel[statusTone="error"] {{ color: {colors['error']}; }}
+QLabel[statusTone="active"] {{ color: {colors['text']}; border-color: {colors['accent']}; }}
+QLabel[statusTone="warning"] {{ color: {colors['warning']}; }}
 QLineEdit, QPlainTextEdit, QTextEdit, QListWidget, QComboBox, QSpinBox {{
     background: {colors['surface']};
     color: {colors['text']};

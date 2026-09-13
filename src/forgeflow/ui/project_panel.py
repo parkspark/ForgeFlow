@@ -1,9 +1,16 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Signal, Qt
 from PySide6.QtWidgets import (
-    QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QPushButton, QVBoxLayout, QWidget,
+    QGridLayout, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QPushButton, QVBoxLayout, QWidget, QStyledItemDelegate,
 )
+from .status import status_text, set_status_badge
+
+
+class JobDelegate(QStyledItemDelegate):
+    def initStyleOption(self, option, index):
+        super().initStyleOption(option, index)
+        option.text = ""
 
 
 class ProjectPanel(QWidget):
@@ -19,6 +26,7 @@ class ProjectPanel(QWidget):
         layout.addWidget(title)
         layout.addWidget(QLabel("최근 작업"))
         self.jobs = QListWidget()
+        self.jobs.setItemDelegate(JobDelegate(self.jobs))
         self.jobs.currentItemChanged.connect(self._selected)
         layout.addWidget(self.jobs, 1)
         row = QHBoxLayout()
@@ -32,9 +40,30 @@ class ProjectPanel(QWidget):
 
     @staticmethod
     def _job_text(job) -> str:
-        return (f"{job.name}\n{job.job_id}\n모델링 {job.stages['modeling'].status} · "
-                f"Blender {job.stages['blender'].status} · 리깅 {job.stages['rigging'].status} · "
-                f"Unity {job.stages['unity'].status}")
+        return (f"{job.name}\n{job.job_id}\n모델링 {status_text(job.stages['modeling'].status)} · "
+                f"Blender {status_text(job.stages['blender'].status)} · 리깅 {status_text(job.stages['rigging'].status)} · "
+                f"Unity {status_text(job.stages['unity'].status)}")
+
+    def _render_item(self, item, job):
+        card = QWidget()
+        card.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(6, 6, 6, 6)
+        for text in (job.name, job.job_id):
+            label = QLabel(text)
+            label.setTextFormat(Qt.TextFormat.PlainText)
+            label.setWordWrap(True)
+            layout.addWidget(label)
+        badges = QGridLayout()
+        for index, (key, title) in enumerate((("modeling", "모델링"), ("blender", "Blender"), ("rigging", "리깅"), ("unity", "Unity"))):
+            badge = QLabel()
+            set_status_badge(badge, title, job.stages[key].status)
+            badges.addWidget(badge, index // 2, index % 2)
+        layout.addLayout(badges)
+        item.setToolTip(self._job_text(job))
+        self.jobs.setItemWidget(item, card)
+        card.ensurePolished()
+        item.setSizeHint(card.sizeHint())
 
     def set_jobs(self, jobs, selected_id: str | None = None) -> None:
         self.jobs.blockSignals(True)
@@ -44,6 +73,7 @@ class ProjectPanel(QWidget):
             self.jobs.addItem(self._job_text(job))
             item = self.jobs.item(index)
             item.setData(256, job.job_id)
+            self._render_item(item, job)
             if job.job_id == selected_id:
                 selected_row = index
         if self.jobs.count():
@@ -64,6 +94,7 @@ class ProjectPanel(QWidget):
         item.setText(self._job_text(job))
         item.setData(256, job.job_id)
         self.jobs.insertItem(max(0, min(index, self.jobs.count())), item)
+        self._render_item(item, job)
         target_id = selected_id or job.job_id
         for row in range(self.jobs.count()):
             if self.jobs.item(row).data(256) == target_id:

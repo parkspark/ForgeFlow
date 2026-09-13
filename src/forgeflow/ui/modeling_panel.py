@@ -9,6 +9,9 @@ from PySide6.QtWidgets import (
 )
 
 
+from .status import set_status_badge
+
+
 class ModelingPanel(QWidget):
     generate_requested = Signal()
     retry_requested = Signal()
@@ -20,7 +23,11 @@ class ModelingPanel(QWidget):
         layout = QVBoxLayout(self)
         self.status = QLabel("작업을 선택하세요.")
         self.status.setObjectName("stageStatus")
-        layout.addWidget(self.status)
+        layout.addWidget(self.status, 0, Qt.AlignmentFlag.AlignLeft)
+        self.error = QLabel()
+        self.error.setWordWrap(True)
+        self.error.setTextFormat(Qt.TextFormat.PlainText)
+        layout.addWidget(self.error)
         splitter = QSplitter()
         self.preview = QLabel("입력 이미지 미리보기")
         self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -49,7 +56,9 @@ class ModelingPanel(QWidget):
 
     def set_job(self, job, busy: bool = False) -> None:
         state = job.stages["modeling"]
-        self.status.setText(f"모델링: {state.status}" + (f" · {state.error}" if state.error else ""))
+        set_status_badge(self.status, "모델링", state.status)
+        self.error.setText(state.error or "")
+        self.error.setVisible(bool(state.error))
         pixmap = QPixmap(job.input_image_path)
         if not pixmap.isNull():
             self.preview.setPixmap(pixmap.scaled(420, 340, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))

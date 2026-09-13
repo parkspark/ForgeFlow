@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .status import status_text
+
 import json
 from pathlib import Path
 
@@ -224,9 +226,9 @@ class UnityPanel(QWidget):
         review = QGroupBox("실행 결과 검토")
         review_form = QFormLayout(review)
         review_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-        self.execution_result = QLabel("Agent execution: 대기")
-        self.automated_result = QLabel("Automated verification: unavailable")
-        self.human_result = QLabel("Human review: pending")
+        self.execution_result = QLabel("실행 결과: 대기")
+        self.automated_result = QLabel("자동 검증: 검증 정보 없음")
+        self.human_result = QLabel("사용자 검토: 대기")
         for result_label in (self.execution_result, self.automated_result, self.human_result):
             self._make_wrapping_label_shrinkable(result_label)
         self.checks = QPlainTextEdit()
@@ -336,8 +338,8 @@ class UnityPanel(QWidget):
             if turn.assistant_text:
                 lines.append(f"\n[로컬 모델]\n{turn.assistant_text}")
             lines.append(
-                f"\n[상태] Agent={turn.status} · 자동={turn.automated_status} · "
-                f"인간={turn.human_review_status}"
+                f"\n[상태] Agent={status_text(turn.status)} · 자동={status_text(turn.automated_status)} · "
+                f"인간={status_text(turn.human_review_status)}"
             )
         self.chat.setPlainText("\n".join(lines).strip())
         self.chat.moveCursor(self.chat.textCursor().MoveOperation.End)
@@ -444,9 +446,9 @@ class UnityPanel(QWidget):
     def _render_review(self, turn: UnityTurn | None) -> None:
         self._latest_turn = turn
         if turn is None:
-            self.execution_result.setText("Agent execution: 대기")
-            self.automated_result.setText("Automated verification: unavailable")
-            self.human_result.setText("Human review: pending")
+            self.execution_result.setText("실행 결과: 대기")
+            self.automated_result.setText("자동 검증: 검증 정보 없음")
+            self.human_result.setText("사용자 검토: 대기")
             self.checks.clear()
             self.screenshot_preview.clear()
             self.screenshot_preview.setText("스크린샷 없음")
@@ -454,9 +456,9 @@ class UnityPanel(QWidget):
             for button in (self.accept_button, self.reject_button, self.repair_button):
                 button.setEnabled(False)
             return
-        self.execution_result.setText(f"Agent execution: {turn.status}")
-        self.automated_result.setText(f"Automated verification: {turn.automated_status}")
-        self.human_result.setText(f"Human review: {turn.human_review_status}")
+        self.execution_result.setText(f"실행 결과: {status_text(turn.status)}")
+        self.automated_result.setText(f"자동 검증: {status_text(turn.automated_status)}")
+        self.human_result.setText(f"사용자 검토: {status_text(turn.human_review_status)}")
         self.checks.setPlainText(
             json.dumps(
                 {
@@ -469,7 +471,7 @@ class UnityPanel(QWidget):
         )
         if not turn.requested_checks or not turn.measured_checks:
             self.automated_result.setText(
-                f"Automated verification: {turn.automated_status} — 자동 검증 항목이 없거나 "
+                f"자동 검증: {status_text(turn.automated_status)} — 자동 검증 항목이 없거나 "
                 "불완전합니다. 실행 결과를 Unity에서 직접 확인하세요."
             )
         pending = turn.status == "succeeded" and turn.human_review_status == "pending"

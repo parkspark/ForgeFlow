@@ -9,6 +9,9 @@ from PySide6.QtWidgets import (
 )
 
 
+from .status import status_text
+
+
 class BlenderPanel(QWidget):
     inspect_requested = Signal()
     propose_requested = Signal(str)
@@ -85,7 +88,7 @@ class BlenderPanel(QWidget):
                 lines.append(f"{step['number']}. {step['description']}\n   {step['tool']} {json.dumps(step['arguments'], ensure_ascii=False)}")
             self.plan.setPlainText("\n".join(lines))
         elif request:
-            self.plan.setPlainText(f"v{request.version:03d} · {request.status}")
+            self.plan.setPlainText(f"v{request.version:03d} · {status_text(request.status)}")
         else:
             self.plan.clear()
         self.versions.clear()
