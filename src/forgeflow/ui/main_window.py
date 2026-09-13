@@ -23,6 +23,7 @@ from forgeflow.services.pipeline_service import PipelineService
 
 from .blender_panel import BlenderPanel
 from .log_panel import LogPanel
+from .progress_panel import ProgressPanel
 from .modeling_panel import ModelingPanel
 from .project_panel import ProjectPanel
 from .rigging_panel import RiggingPanel
@@ -84,10 +85,8 @@ class MainWindow(QMainWindow):
         self.theme_selector.setCurrentIndex(self.theme_selector.findData(selected_theme))
         env_layout.addWidget(self.theme_selector)
         self.refresh_environment_button = QPushButton("새로고침")
-        self.cancel_button = QPushButton("실행 취소")
-        self.cancel_button.setEnabled(False)
         env_layout.addWidget(self.refresh_environment_button)
-        env_layout.addWidget(self.cancel_button)
+
         model_layout = QHBoxLayout()
         env_root.addLayout(model_layout)
         for key, title, model in (
@@ -115,7 +114,14 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.rigging_panel, "3. Humanoid 리깅")
         self.tabs.addTab(self.unity_panel, "4. Unity 텍스트 컨트롤")
         self.tabs.addTab(self.log_panel, "실행 로그")
-        splitter.addWidget(self.tabs)
+        work_area = QWidget()
+        work_layout = QVBoxLayout(work_area)
+        work_layout.setContentsMargins(0, 0, 0, 0)
+        work_layout.addWidget(self.tabs, 1)
+        self.progress_panel = ProgressPanel()
+        self.cancel_button = self.progress_panel.cancel
+        work_layout.addWidget(self.progress_panel)
+        splitter.addWidget(work_area)
         splitter.setStretchFactor(1, 1)
         root.addWidget(splitter, 1)
         self.setCentralWidget(central)
@@ -156,13 +162,16 @@ class MainWindow(QMainWindow):
         self.unity.protocol_error.connect(self._unity_error)
         self.unity.log_received.connect(lambda line: self.log_panel.append(f"[Unity Agent] {line}"))
         self.pipeline.log_received.connect(self.log_panel.append)
+        self.pipeline.log_received.connect(self.progress_panel.append)
+        self.pipeline.event_received.connect(self.progress_panel.on_event)
+        self.pipeline.operation_finished.connect(self.progress_panel.finish)
+        self.progress_panel.cancel_requested.connect(self.pipeline.cancel_active)
         self.pipeline.log_received.connect(self.rigging_panel.append_log)
         self.pipeline.job_changed.connect(self._job_changed)
         self.pipeline.inspect_ready.connect(self.blender_panel.set_inspection)
         self.pipeline.plan_ready.connect(lambda _job, _request: self.tabs.setCurrentWidget(self.blender_panel))
         self.pipeline.operation_finished.connect(self._operation_finished)
         self.refresh_environment_button.clicked.connect(self.refresh_environment)
-        self.cancel_button.clicked.connect(self.pipeline.cancel_active)
         self.theme_selector.currentIndexChanged.connect(self._theme_changed)
 
     def _apply_theme(self, name: str) -> None:
@@ -385,7 +394,6 @@ class MainWindow(QMainWindow):
             return
         try:
             self.pipeline.start_modeling(self.current_job)
-            self.tabs.setCurrentWidget(self.log_panel)
             self._render_job()
         except Exception as exc:
             QMessageBox.critical(self, "모델 생성 시작 실패", str(exc))
@@ -395,7 +403,6 @@ class MainWindow(QMainWindow):
             return
         try:
             self.pipeline.start_inspect(self.current_job, suffix=f"v{self.current_job.latest_blender_request.version:03d}" if self.current_job.latest_blender_request else "source")
-            self.tabs.setCurrentWidget(self.log_panel)
             self._render_job()
         except Exception as exc:
             QMessageBox.critical(self, "장면 검사 실패", str(exc))
@@ -405,7 +412,6 @@ class MainWindow(QMainWindow):
             return
         try:
             self.pipeline.start_proposal(self.current_job, request)
-            self.tabs.setCurrentWidget(self.log_panel)
             self._render_job()
         except Exception as exc:
             QMessageBox.critical(self, "계획 생성 실패", str(exc))
@@ -415,7 +421,6 @@ class MainWindow(QMainWindow):
             return
         try:
             self.pipeline.approve(self.current_job)
-            self.tabs.setCurrentWidget(self.log_panel)
             self._render_job()
         except Exception as exc:
             QMessageBox.critical(self, "Blender 실행 실패", str(exc))
