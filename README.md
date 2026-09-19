@@ -35,7 +35,7 @@ ForgeFlow는 기존 Pixal3D 이미지→3D 생성기, 승인 기반 Blender 자�
 - Humanoid FBX 선택 가져오기와 비덮어쓰기 `vNNN` Asset 경로·원본 SHA-256 기록
 - Unity 실행 결과, 자동 검증, 인간 검토를 서로 독립된 상태로 저장
 - Unity 로그, JSONL, receipt, 스크린샷과 수정 피드백 기반 `repair_existing` 재실행
-- 원자적 `job.json` 저장과 재시작 복구
+- `job.json` 저장과 재시작 복구
 - 파일/결과 폴더 열기, 실패 재시도, 실행 취소
 - 상단 선택기로 즉시 전환하고 다음 실행에도 유지되는 중성 라이트/다크 테마
 
