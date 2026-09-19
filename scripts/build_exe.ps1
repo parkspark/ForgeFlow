@@ -18,11 +18,12 @@ try {
         throw "PyInstaller is not installed. Run: python -m pip install -e .[build]"
     }
 
-    python -m PyInstaller --noconfirm --clean --distpath .\build\release .\ForgeFlow.spec
+    python -m PyInstaller --noconfirm --clean --distpath .\build\release .\packaging\ForgeFlow.spec
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $stagingPath -PathType Leaf)) {
         throw "Failed to build ForgeFlow.exe."
     }
 
+    New-Item -ItemType Directory -Path (Split-Path -Parent $outputPath) -Force | Out-Null
     $publishedPath = $outputPath
     try {
         Copy-Item -LiteralPath $stagingPath -Destination $outputPath -Force -ErrorAction Stop

@@ -12,9 +12,14 @@ from uuid import uuid4
 
 from forgeflow.domain.artifact import Artifact
 from forgeflow.domain.job import (
-    BlenderRequest, Job, RiggingRequest, STATUSES, UnitySession, UnityTurn, utc_now,
+    STATUSES,
+    BlenderRequest,
+    Job,
+    RiggingRequest,
+    UnitySession,
+    UnityTurn,
+    utc_now,
 )
-
 
 ALLOWED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg"}
 
@@ -45,14 +50,19 @@ class JobService:
         return source
 
     def job_directory(self, job_id: str) -> Path:
-        if not job_id or any(character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for character in job_id):
+        if not job_id or any(
+            character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+            for character in job_id
+        ):
             raise ValueError("잘못된 작업 ID입니다.")
         path = (self.root / job_id).resolve(strict=False)
         if path.parent != self.root:
             raise ValueError("작업 경로가 저장 루트를 벗어났습니다.")
         return path
 
-    def create(self, name: str, image_path: str | Path, settings: dict[str, object] | None = None) -> Job:
+    def create(
+        self, name: str, image_path: str | Path, settings: dict[str, object] | None = None
+    ) -> Job:
         source = self.validate_image(image_path)
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         job_id = f"job-{timestamp}-{uuid4().hex[:8]}"
@@ -131,7 +141,11 @@ class JobService:
                     stage.completed_at = utc_now()
                     job.errors.append({"stage": name, "message": stage.error, "at": utc_now()})
                     changed = True
-                    if name == "rigging" and job.latest_rigging_request and job.latest_rigging_request.status == "running":
+                    if (
+                        name == "rigging"
+                        and job.latest_rigging_request
+                        and job.latest_rigging_request.status == "running"
+                    ):
                         request = job.latest_rigging_request
                         request.status = "failed"
                         request.error = stage.error
@@ -152,7 +166,14 @@ class JobService:
             recovered.append(job)
         return recovered
 
-    def set_stage(self, job: Job, stage_name: str, status: str, error: str | None = None, log_path: Path | None = None) -> None:
+    def set_stage(
+        self,
+        job: Job,
+        stage_name: str,
+        status: str,
+        error: str | None = None,
+        log_path: Path | None = None,
+    ) -> None:
         if stage_name not in job.stages or status not in STATUSES:
             raise ValueError("잘못된 단계 또는 상태입니다.")
         stage = job.stages[stage_name]
@@ -175,13 +196,10 @@ class JobService:
     def add_artifact(self, job: Job, artifact: Artifact, *, save: bool = True) -> bool:
         return bool(self.add_artifacts(job, [artifact], save=save))
 
-    def add_artifacts(
-        self, job: Job, artifacts: list[Artifact], *, save: bool = True
-    ) -> int:
+    def add_artifacts(self, job: Job, artifacts: list[Artifact], *, save: bool = True) -> int:
         """Register multiple artifacts with at most one durable job write."""
         existing = {
-            os.path.normcase(str(Path(item.path).resolve(strict=False)))
-            for item in job.artifacts
+            os.path.normcase(str(Path(item.path).resolve(strict=False))) for item in job.artifacts
         }
         added = 0
         for artifact in artifacts:
@@ -230,9 +248,7 @@ class JobService:
         job.unity_turns.append(turn)
         self.save(job)
 
-    def review_unity_turn(
-        self, job: Job, turn_id: str, status: str, note: str = ""
-    ) -> UnityTurn:
+    def review_unity_turn(self, job: Job, turn_id: str, status: str, note: str = "") -> UnityTurn:
         if status not in {"accepted", "rejected"}:
             raise ValueError("인간 검토 상태는 accepted 또는 rejected여야 합니다.")
         turn = next((item for item in job.unity_turns if item.turn_id == turn_id), None)

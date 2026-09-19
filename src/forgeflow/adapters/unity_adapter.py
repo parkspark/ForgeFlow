@@ -6,7 +6,7 @@ import re
 import shutil
 import subprocess
 import threading
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
@@ -16,25 +16,23 @@ from PySide6.QtCore import QObject, Signal
 from forgeflow.config import AppConfig
 from forgeflow.domain.job import Job, UnitySession, UnityTurn, utc_now
 from forgeflow.domain.process import ProcessCommand
-from forgeflow.services.job_service import JobService, sha256_file
+from forgeflow.services.job_service import JobService
 from forgeflow.services.path_utils import same_path
 from forgeflow.services.process_control import terminate_process_tree
 
-UNITY_PROJECT_MARKERS = ("Assets", "ProjectSettings")
-
-
-@dataclass(frozen=True)
-class UnityImportResult:
-    source_path: str
-    source_sha256: str
-    asset_path: str
-    absolute_path: str
-    version: int
-
-
-def _safe_job_id(value: str) -> str:
-    safe = "".join(char if char.isalnum() or char in "-_" else "_" for char in value)
-    return safe.strip("_-") or "job"
+from .unity.project import (
+    UNITY_PROJECT_MARKERS as UNITY_PROJECT_MARKERS,
+)
+from .unity.project import (
+    UnityImportResult,
+    copy_humanoid_fbx,
+    validate_project,
+)
+from .unity.project import (
+    safe_job_id as _safe_job_id,
+)
+from .unity.prompts import build_effective_prompt
+from .unity.receipts import collect_changed_assets, parse_receipt
 
 
 class UnityAdapter(QObject):
@@ -88,15 +86,7 @@ class UnityAdapter(QObject):
 
     @staticmethod
     def validate_project(project_path: str | Path) -> Path:
-        project = Path(project_path).expanduser().resolve(strict=True)
-        if not project.is_dir():
-            raise ValueError(f"Unity 프로젝트 폴더가 아닙니다: {project}")
-        missing = [name for name in UNITY_PROJECT_MARKERS if not (project / name).is_dir()]
-        if missing:
-            raise ValueError(
-                f"Unity 프로젝트가 아닙니다({', '.join(missing)} 폴더 없음): {project}"
-            )
-        return project
+        return validate_project(project_path)
 
     def validate_environment(self) -> dict[str, dict[str, Any]]:
         agent_main = self.config.unity_agent_root / "main.py"
@@ -120,7 +110,11 @@ class UnityAdapter(QObject):
             raise RuntimeError("Unity 실행 환경을 찾을 수 없습니다: " + ", ".join(failed))
         venv_python = self.config.unity_agent_root / ".venv" / "Scripts" / "python.exe"
         base_args = [
-            "-u", "main.py", "--forgeflow-jsonl", "--project", str(project),
+            "-u",
+            "main.py",
+            "--forgeflow-jsonl",
+            "--project",
+            str(project),
         ]
         if venv_python.is_file():
             executable = str(venv_python)
@@ -143,53 +137,18 @@ class UnityAdapter(QObject):
 
     def import_humanoid_fbx(self, job: Job, project_path: str | Path) -> UnityImportResult:
         project = self.validate_project(project_path)
-        if not job.unity_input_path:
-            raise ValueError("현재 Job에 4단계 Humanoid FBX가 없습니다.")
-        source = Path(job.unity_input_path).expanduser().resolve(strict=True)
-        if not source.is_file() or source.suffix.lower() != ".fbx":
-            raise ValueError(f"유효한 Humanoid FBX가 아닙니다: {source}")
-        source_hash = sha256_file(source)
-        relative_root = Path("Assets") / "ForgeFlow" / _safe_job_id(job.job_id) / "Models"
-        absolute_root = project / relative_root
-        absolute_root.mkdir(parents=True, exist_ok=True)
-        version = 1
-        while True:
-            relative = relative_root / f"v{version:03d}" / "Character_humanoid.fbx"
-            destination = project / relative
-            if not destination.exists():
-                break
-            version += 1
-        destination.parent.mkdir(parents=True, exist_ok=False)
-        shutil.copy2(source, destination)
-        if sha256_file(destination) != source_hash:
-            raise RuntimeError("Unity 프로젝트로 복사한 FBX의 SHA-256이 원본과 다릅니다.")
-        asset_path = relative.as_posix()
-        result = UnityImportResult(
-            source_path=str(source), source_sha256=source_hash,
-            asset_path=asset_path, absolute_path=str(destination.resolve()), version=version,
-        )
+        result = copy_humanoid_fbx(job, project)
         imports = self._unity_root(job) / "imports"
-        record = imports / f"v{version:03d}.json"
+        record = imports / f"v{result.version:03d}.json"
         record.write_text(
             json.dumps(asdict(result), ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
         job.unity_project_path = str(project)
-        job.unity_asset_path = asset_path
+        job.unity_asset_path = result.asset_path
         self.jobs.save(job)
         self.job_changed.emit(job)
         return result
-
-    @staticmethod
-    def _rig_status(job: Job) -> str:
-        request = job.latest_rigging_request
-        if request and request.report_path:
-            try:
-                payload = json.loads(Path(request.report_path).read_text(encoding="utf-8"))
-                return str(payload.get("status") or "unknown")
-            except (OSError, json.JSONDecodeError):
-                pass
-        return "unknown"
 
     def build_effective_prompt(
         self,
@@ -202,56 +161,14 @@ class UnityAdapter(QObject):
         human_review_feedback: str | None = None,
     ) -> str:
         project = self.validate_project(project_path)
-        assets = "(none selected)"
-        if include_asset:
-            if not job.unity_asset_path:
-                raise ValueError("컨텍스트에 포함할 Unity Asset이 아직 없습니다.")
-            assets = (
-                f"- Selected Humanoid FBX (exact required path): {job.unity_asset_path}\n"
-                f"- Rig report: {self._rig_status(job)}\n"
-                "- Use this exact selected FBX. Do not search for or substitute another version."
-            )
-        scene = job.latest_unity_scene_path if include_current_scene else None
-        parts = [
-            "[ForgeFlow Context]",
-            "Unity project:",
-            str(project),
-            "",
-            "Current active ForgeFlow job:",
-            f"{job.job_id} — {job.name}",
-            "",
-            "Available imported assets:",
-            assets,
-            "",
-            "Known latest scene:",
-            scene or "(none selected)",
-            "",
-            "Safety:",
-            "- Work only in the selected Unity project.",
-            "- Preserve existing user scenes and assets unless the user explicitly asks to modify them.",
-            f"- Prefer Assets/ForgeFlow/{_safe_job_id(job.job_id)}/ for newly created assets.",
-            "- Release simulated input and stop Play Mode after verification.",
-            "- Report created and modified asset paths.",
-            "- Do not claim subjective dynamic quality as automatically verified.",
-        ]
-        if include_asset:
-            parts.append(
-                f"- For this selected ForgeFlow asset request, create new assets under "
-                f"Assets/ForgeFlow/{_safe_job_id(job.job_id)}/ unless the user names another path."
-            )
-        if human_review_feedback:
-            parts.extend(["", "[Human Review Feedback]", human_review_feedback.strip()])
-        parts.extend(
-            [
-                "",
-                "[User Request]",
-                user_text,
-                "",
-                "[Human Review Policy]",
-                "Dynamic motion, animation quality, controls, camera feel, timing, and visual polish will be reviewed by a human. Perform the requested implementation and available objective checks, then leave clear instructions for human Play Mode review.",
-            ]
+        return build_effective_prompt(
+            job,
+            project,
+            user_text,
+            include_asset=include_asset,
+            include_current_scene=include_current_scene,
+            human_review_feedback=human_review_feedback,
         )
-        return "\n".join(parts)
 
     def start_session(self, job: Job, project_path: str | Path) -> UnitySession:
         project = self.validate_project(project_path)
@@ -268,8 +185,10 @@ class UnityAdapter(QObject):
         self._session_log = session_dir / "session.jsonl"
         self._stderr_log = self._unity_root(job) / "unity.log"
         self.session = UnitySession(
-            session_id=session_id, project_path=str(project),
-            model=self.config.unity_agent_model, status="starting",
+            session_id=session_id,
+            project_path=str(project),
+            model=self.config.unity_agent_model,
+            status="starting",
         )
         job.unity_project_path = str(project)
         self.jobs.add_unity_session(job, self.session)
@@ -279,10 +198,18 @@ class UnityAdapter(QObject):
             creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
         try:
             self.process = self._process_factory(
-                [command.executable, *command.arguments], cwd=command.cwd,
-                env=command.environment, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
-                bufsize=1, shell=False, creationflags=creationflags,
+                [command.executable, *command.arguments],
+                cwd=command.cwd,
+                env=command.environment,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1,
+                shell=False,
+                creationflags=creationflags,
             )
         except BaseException as exc:
             self.session.status = "failed"
@@ -358,7 +285,11 @@ class UnityAdapter(QObject):
             event_type = event["type"]
             if event_type == "session_ready":
                 actual = str(event.get("projectPath") or "")
-                if not self.session or not actual or not same_path(actual, self.session.project_path):
+                if (
+                    not self.session
+                    or not actual
+                    or not same_path(actual, self.session.project_path)
+                ):
                     expected = self.session.project_path if self.session else "(none)"
                     self._fail_session(
                         f"Unity 프로젝트 identity 불일치: expected {expected}, got {actual or '(missing)'}"
@@ -392,7 +323,9 @@ class UnityAdapter(QObject):
                         destination = screenshot_root / f"{turn.turn_id}-{source.name}"
                         counter = 2
                         while destination.exists():
-                            destination = screenshot_root / f"{turn.turn_id}-{counter}-{source.name}"
+                            destination = (
+                                screenshot_root / f"{turn.turn_id}-{counter}-{source.name}"
+                            )
                             counter += 1
                         try:
                             shutil.copy2(source, destination)
@@ -439,14 +372,21 @@ class UnityAdapter(QObject):
             raise ValueError("Unity 명령을 입력하세요.")
         turn_id = f"turn-{len(self.job.unity_turns) + 1:03d}-{uuid4().hex[:6]}"
         effective = self.build_effective_prompt(
-            self.job, self.session.project_path, exact_text,
-            include_asset=include_asset, include_current_scene=include_current_scene,
+            self.job,
+            self.session.project_path,
+            exact_text,
+            include_asset=include_asset,
+            include_current_scene=include_current_scene,
             human_review_feedback=human_review_feedback,
         )
         turn = UnityTurn(
-            turn_id=turn_id, session_id=self.session.session_id,
-            user_text=exact_text, effective_prompt=effective,
-            repair_existing=repair_existing, status="running", started_at=utc_now(),
+            turn_id=turn_id,
+            session_id=self.session.session_id,
+            user_text=exact_text,
+            effective_prompt=effective,
+            repair_existing=repair_existing,
+            status="running",
+            started_at=utc_now(),
         )
         turn_dir = self._session_dir / "turns" / turn_id
         turn_dir.mkdir(parents=True, exist_ok=False)
@@ -459,20 +399,23 @@ class UnityAdapter(QObject):
         self.job_changed.emit(self.job)
         self._send(
             {
-                "type": "prompt", "id": turn_id, "text": effective,
+                "type": "prompt",
+                "id": turn_id,
+                "text": effective,
                 "user_text": exact_text,
                 "repair_existing": repair_existing,
                 "analyze_screenshot": analyze_screenshot,
                 "human_review_feedback": human_review_feedback,
                 "selected_asset_paths": (
                     [self.job.unity_asset_path]
-                    if include_asset and self.job.unity_asset_path else []
+                    if include_asset and self.job.unity_asset_path
+                    else []
                 ),
                 "preferred_output_root": (
                     f"Assets/ForgeFlow/{_safe_job_id(self.job.job_id)}/"
-                    if include_asset and not re.search(
-                        r"Assets[/\\][^\r\n]*?\.unity\b", exact_text, re.I
-                    ) else None
+                    if include_asset
+                    and not re.search(r"Assets[/\\][^\r\n]*?\.unity\b", exact_text, re.I)
+                    else None
                 ),
             }
         )
@@ -487,98 +430,14 @@ class UnityAdapter(QObject):
             process.stdin.write(line)
             process.stdin.flush()
 
-    @staticmethod
-    def _receipt_lists(payload: dict[str, Any], name: str) -> list[Any]:
-        value = payload.get(name, [])
-        return value if isinstance(value, list) else []
-
     @classmethod
     def parse_receipt(cls, path: str | Path | None) -> dict[str, Any]:
-        if not path:
-            return {"automated_status": "unavailable"}
-        receipt = Path(path)
-        try:
-            payload = json.loads(receipt.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError, TypeError):
-            return {"automated_status": "unavailable"}
-        requested = cls._receipt_lists(payload, "requested_checks")
-        measured = cls._receipt_lists(payload, "measured_checks")
-        skipped = cls._receipt_lists(payload, "skipped_checks")
-        unmapped = cls._receipt_lists(payload, "unmapped_requirements")
-        status = str(payload.get("status") or "").lower()
-        if status == "failed":
-            automated = "failed"
-        elif not requested and not measured:
-            automated = "unavailable"
-        elif not requested or not measured or skipped or unmapped:
-            automated = "partial"
-        elif status == "verified":
-            automated = "verified"
-        else:
-            automated = "partial"
-        return {
-            "automated_status": automated,
-            "requested_checks": requested,
-            "measured_checks": measured,
-            "skipped_checks": skipped,
-            "unmapped_requirements": unmapped,
-            "receipt": payload,
-        }
+        return parse_receipt(path)
 
     @staticmethod
     def collect_changed_assets(jsonl_path: str | Path | None) -> list[str]:
         """Extract project-relative assets from mutation tool audit records."""
-        if not jsonl_path:
-            return []
-        path = Path(jsonl_path)
-        mutations = {
-            "unity_create_gameobject", "unity_create_gameobjects",
-            "unity_modify_gameobject", "unity_delete_gameobject",
-            "unity_add_component", "unity_remove_component",
-            "unity_set_component_property", "unity_create_material",
-            "unity_create_scene", "unity_open_scene", "unity_save_scene",
-            "unity_write_script", "unity_delete_script", "unity_write_level",
-        }
-        found: list[str] = []
-        seen: set[str] = set()
-
-        def walk(node: Any) -> None:
-            if isinstance(node, str):
-                normalized = node.replace("\\", "/")
-                start = normalized.find("Assets/")
-                if start >= 0:
-                    candidate = normalized[start:].split("\n", 1)[0].strip(' "\'')
-                    if candidate and candidate not in seen:
-                        seen.add(candidate)
-                        found.append(candidate)
-            elif isinstance(node, dict):
-                for child in node.values():
-                    walk(child)
-            elif isinstance(node, list):
-                for child in node:
-                    walk(child)
-
-        try:
-            with path.open(encoding="utf-8") as handle:
-                for line in handle:
-                    try:
-                        event = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if event.get("event") != "tool_result" or event.get("name") not in mutations:
-                        continue
-                    walk(event.get("arguments"))
-                    result = event.get("result")
-                    if isinstance(result, str):
-                        try:
-                            walk(json.loads(result))
-                        except json.JSONDecodeError:
-                            walk(result)
-                    else:
-                        walk(result)
-        except OSError:
-            return []
-        return found
+        return collect_changed_assets(jsonl_path)
 
     def _finish_turn(self, turn: UnityTurn, event: dict[str, Any], *, success: bool) -> None:
         turn.completed_at = utc_now()
@@ -615,7 +474,9 @@ class UnityAdapter(QObject):
             )
         if self.job:
             self.jobs.set_stage(
-                self.job, "unity", "awaiting_review" if success else "failed",
+                self.job,
+                "unity",
+                "awaiting_review" if success else "failed",
                 error=turn.error if not success else None,
                 log_path=Path(turn.run_log_path) if turn.run_log_path else None,
             )
@@ -638,8 +499,10 @@ class UnityAdapter(QObject):
                         "human_review_note": turn.human_review_note,
                         "human_reviewed_at": turn.human_reviewed_at,
                     },
-                    ensure_ascii=False, indent=2,
-                ) + "\n",
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                + "\n",
                 encoding="utf-8",
             )
         self.job_changed.emit(self.job)
@@ -664,9 +527,12 @@ class UnityAdapter(QObject):
         if not feedback.strip():
             raise ValueError("수정 피드백을 입력하세요.")
         return self.send_prompt(
-            source.user_text, include_asset=include_asset,
-            include_current_scene=include_current_scene, repair_existing=True,
-            analyze_screenshot=analyze_screenshot, human_review_feedback=feedback,
+            source.user_text,
+            include_asset=include_asset,
+            include_current_scene=include_current_scene,
+            repair_existing=True,
+            analyze_screenshot=analyze_screenshot,
+            human_review_feedback=feedback,
         )
 
     def cancel_active(self) -> None:
@@ -705,8 +571,13 @@ class UnityAdapter(QObject):
         self.process = None
 
     def build_prompt_file_command(
-        self, project_path: str | Path, prompt_file: str | Path,
-        session_dir: Path, *, repair_existing: bool = False, vision: bool = False,
+        self,
+        project_path: str | Path,
+        prompt_file: str | Path,
+        session_dir: Path,
+        *,
+        repair_existing: bool = False,
+        vision: bool = False,
     ) -> ProcessCommand:
         """One-shot compatibility boundary when persistent JSONL is unavailable."""
         project = self.validate_project(project_path)
@@ -733,7 +604,9 @@ class UnityAdapter(QObject):
                     self.session.status = "closed"
                 else:
                     self.session.status = "failed"
-                    self.session.error = f"Unity Agent 프로세스가 종료 코드 {code}로 종료되었습니다."
+                    self.session.error = (
+                        f"Unity Agent 프로세스가 종료 코드 {code}로 종료되었습니다."
+                    )
                     if self._active_turn and self.job:
                         self._active_turn.status = "failed"
                         self._active_turn.error = self.session.error

@@ -1,2 +1,1 @@
 """ForgeFlow domain records."""
-

@@ -7,7 +7,7 @@ ForgeFlow는 기존 Pixal3D 이미지→3D 생성기, 승인 기반 Blender 자�
 이전에 만들었던 모듈들을 합쳐, 하나의 앱에서 이미지를 넣어서 모델링 생성, 모델링 수정, Unity에서 리깅 및 애니메이션까지 한 곳에서 컨트롤할 수 있도록 통합화 중입니다.
 
 <p align="center">
-  <img src="readme_image/theme_light.png" alt="ForgeFlow에서 이미지 기반 3D 모델을 생성하고 Blender 편집, Humanoid 리깅, Unity 제어까지 연결하는 화면" width="100%">
+  <img src="docs/images/screenshots/theme_light.png" alt="ForgeFlow에서 이미지 기반 3D 모델을 생성하고 Blender 편집, Humanoid 리깅, Unity 제어까지 연결하는 화면" width="100%">
 </p>
 <p align="center"><sub>이미지 입력 → 3D 모델 생성 → Blender 편집 → Humanoid 리깅 → Unity 텍스트 제어</sub></p>
 
@@ -137,6 +137,29 @@ UniRig 업스트림은 WSL 경로의 공백을 처리하지 못합니다. 입력
 
 ## 구조와 보안 경계
 
+```text
+ForgeFlow/
+├─ src/forgeflow/
+│  ├─ domain/              # 작업·단계·산출물 데이터 모델
+│  ├─ services/            # 저장·프로세스·파이프라인·환경 점검
+│  ├─ adapters/            # 외부 도구별 연동 진입점
+│  │  └─ unity/            # 프로젝트/FBX·프롬프트·검증 영수증 처리
+│  ├─ ui/
+│  │  ├─ panels/           # 작업별 화면과 공통 패널
+│  │  ├─ dialogs/          # 설정 대화상자
+│  │  └─ main_window.py    # 앱 구성과 화면 간 연결
+│  └─ resources/           # 앱 아이콘
+├─ tests/                  # adapters / services / integration / ui
+├─ scripts/
+│  ├─ e2e/                # 외부 엔진을 사용하는 실제 E2E 실행
+│  └─ build_exe.ps1        # Windows EXE 빌드
+├─ packaging/              # PyInstaller spec·런처·Windows 버전 정보
+└─ docs/
+   ├─ development.md       # 개발 환경과 검증 방법
+   └─ images/              # README 화면·변경 이력 이미지
+```
+
+- 개발 환경, 폴더별 역할과 코드 정리 규칙은 [개발 안내](docs/development.md)를 참고하세요.
 - `domain`: 작업, 단계, 산출물, 파이프라인 이벤트
 - `services`: 원자적 저장, QProcess 실행, 작업 오케스트레이션, 환경 점검
 - `adapters/modeling_adapter.py`: 기존 PowerShell 생성기 호출과 결과 정규화
@@ -144,7 +167,8 @@ UniRig 업스트림은 WSL 경로의 공백을 처리하지 못합니다. 입력
 - `adapters/rigging_adapter.py`: GLB 입력/버전/staging/UniRig 명령/report/산출물/계보 검증
 - `adapters/unity_adapter.py`: Unity Agent 환경/프로세스/JSONL 세션, 프로젝트 identity, FBX 가져오기, 로그·receipt·스크린샷, 취소와 fallback
 - `adapters/blender_bridge.py`: blender-prompt-agent 가상환경에서 기존 에이전트/MCP 클래스만 호출하는 JSON Lines 브리지
-- `ui`: 프로젝트, 모델링, Blender 계획/승인, 로그 패널
+- `ui/panels`: 프로젝트, 모델링, Blender 계획/승인, 리깅, Unity, 로그·진행·다음 단계 패널
+- `ui/dialogs`: 설정 대화상자
 
 외부 프로세스는 실행 파일과 인자 배열로 시작하며 셸 문자열을 만들지 않습니다. Blender 브리지는 임의 Python/셸을 실행하지 않고 `blender-control-mcp`의 allow-list 도구만 사용합니다. 제안 단계는 읽기 도구만 자동 실행하고 항상 승인을 거부한 세션을 남깁니다. 승인 단계는 제안 JSON, 계획 SHA-256, 입력 경로, 출력 버전 폴더를 다시 검증한 뒤 정확히 그 계획만 실행합니다.
 
@@ -153,7 +177,9 @@ UniRig 업스트림은 WSL 경로의 공백을 처리하지 못합니다. 입력
 ForgeFlow:
 
 ```powershell
-$env:PYTHONPATH = "$PWD\src"
+python -m pip install -e ".[dev]"
+python -m ruff check .
+python -m ruff format --check .
 python -m pytest -q
 python -u -m forgeflow.main --smoke-test
 ```
@@ -170,10 +196,10 @@ python -m pytest -q                                      # modeling_local_mcp
 
 ```powershell
 $env:PYTHONPATH = "$PWD\src"
-python -u .\scripts\run_blender_e2e.py --asset C:\absolute\asset.glb --image C:\absolute\reference.png
-python -u .\scripts\run_full_e2e.py --image C:\absolute\reference.png
-python -u .\scripts\run_rigging_e2e.py --asset "C:\absolute\humanoid.glb" --seed 12345
-python -u .\scripts\run_unity_e2e.py --project "C:\absolute\UnityProject" --job-id <job-id>
+python -u .\scripts\e2e\run_blender_e2e.py --asset C:\absolute\asset.glb --image C:\absolute\reference.png
+python -u .\scripts\e2e\run_full_e2e.py --image C:\absolute\reference.png
+python -u .\scripts\e2e\run_rigging_e2e.py --asset "C:\absolute\humanoid.glb" --seed 12345
+python -u .\scripts\e2e\run_unity_e2e.py --project "C:\absolute\UnityProject" --job-id <job-id>
 ```
 
 리깅 E2E는 반드시 ForgeFlow `RiggingAdapter`와 동일 검증 로직을 사용하며 `logs/rigging-e2e-evidence.json`에 입력 전후 해시, Seed, UniRig commit, 실행 시간/종료 코드, 모든 산출물 절대 경로·해시, report 핵심 값, 미리보기와 최종 판정을 기록합니다.

@@ -1,14 +1,25 @@
 from __future__ import annotations
 
-import os
 import ctypes
+import os
 from dataclasses import replace
 from pathlib import Path
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QComboBox, QFileDialog, QGridLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel,
-    QMainWindow, QMessageBox, QPushButton, QSplitter, QTabWidget, QVBoxLayout, QWidget,
+    QComboBox,
+    QFileDialog,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QInputDialog,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QPushButton,
+    QSplitter,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
 )
 
 from forgeflow.adapters.blender_adapter import BlenderAdapter
@@ -21,16 +32,16 @@ from forgeflow.services.environment_service import EnvironmentWorker
 from forgeflow.services.job_service import JobService
 from forgeflow.services.pipeline_service import PipelineService
 
-from .blender_panel import BlenderPanel
-from .log_panel import LogPanel
-from .progress_panel import ProgressPanel
-from .next_step_panel import NextStepPanel
-from .modeling_panel import ModelingPanel
-from .project_panel import ProjectPanel
-from .rigging_panel import RiggingPanel
-from .settings_dialog import SettingsDialog
+from .dialogs.settings_dialog import SettingsDialog
+from .panels.blender_panel import BlenderPanel
+from .panels.log_panel import LogPanel
+from .panels.modeling_panel import ModelingPanel
+from .panels.next_step_panel import NextStepPanel
+from .panels.progress_panel import ProgressPanel
+from .panels.project_panel import ProjectPanel
+from .panels.rigging_panel import RiggingPanel
+from .panels.unity_panel import UnityPanel
 from .theme import build_stylesheet, normalize_theme
-from .unity_panel import UnityPanel
 
 
 class MainWindow(QMainWindow):
@@ -42,8 +53,11 @@ class MainWindow(QMainWindow):
         self.job_list = self.jobs.recover_interrupted()
         self.current_job: Job | None = None
         self.pipeline = PipelineService(
-            self.jobs, ModelingAdapter(self.config, self.jobs), BlenderAdapter(self.config, self.jobs),
-            RiggingAdapter(self.config, self.jobs), self
+            self.jobs,
+            ModelingAdapter(self.config, self.jobs),
+            BlenderAdapter(self.config, self.jobs),
+            RiggingAdapter(self.config, self.jobs),
+            self,
         )
         self.unity = UnityAdapter(self.config, self.jobs, self)
         self.environment_worker: EnvironmentWorker | None = None
@@ -81,9 +95,13 @@ class MainWindow(QMainWindow):
         self.environment_toggle.toggled.connect(self._toggle_environment_details)
         self.environment_labels = {}
         for key, label in (
-            ("modeling", "Pixal3D"), ("gpu", "GPU"), ("wsl", "WSL"),
-            ("mcp", "Blender MCP"), ("unirig", "UniRig"),
-            ("blender", "Blender"), ("unity_mcp", "Unity MCP"),
+            ("modeling", "Pixal3D"),
+            ("gpu", "GPU"),
+            ("wsl", "WSL"),
+            ("mcp", "Blender MCP"),
+            ("unirig", "UniRig"),
+            ("blender", "Blender"),
+            ("unity_mcp", "Unity MCP"),
         ):
             widget = QLabel(f"● {label}: 확인 중")
             widget.setProperty("envState", "checking")
@@ -127,7 +145,11 @@ class MainWindow(QMainWindow):
         self.log_panel = LogPanel()
         self.next_steps = {}
         for key, panel, actions in (
-            ("modeling", self.modeling_panel, [("blender", "Blender에서 편집"), ("rigging", "바로 리깅으로 이동")]),
+            (
+                "modeling",
+                self.modeling_panel,
+                [("blender", "Blender에서 편집"), ("rigging", "바로 리깅으로 이동")],
+            ),
             ("blender", self.blender_panel, [("rigging", "리깅으로 이동")]),
             ("rigging", self.rigging_panel, [("unity", "Unity에서 사용")]),
         ):
@@ -135,7 +157,9 @@ class MainWindow(QMainWindow):
             panel.layout().addWidget(card)
             self.next_steps[key] = card
             for target, button in card.buttons.items():
-                button.clicked.connect(lambda checked=False, destination=target: self.go_to_next_step(destination))
+                button.clicked.connect(
+                    lambda checked=False, destination=target: self.go_to_next_step(destination)
+                )
         self.tabs.addTab(self.modeling_panel, "1. 이미지 → 3D")
         self.tabs.addTab(self.blender_panel, "2. Blender 자연어 편집")
         self.tabs.addTab(self.rigging_panel, "3. Humanoid 리깅")
@@ -196,7 +220,9 @@ class MainWindow(QMainWindow):
         self.pipeline.log_received.connect(self.rigging_panel.append_log)
         self.pipeline.job_changed.connect(self._job_changed)
         self.pipeline.inspect_ready.connect(self.blender_panel.set_inspection)
-        self.pipeline.plan_ready.connect(lambda _job, _request: self.tabs.setCurrentWidget(self.blender_panel))
+        self.pipeline.plan_ready.connect(
+            lambda _job, _request: self.tabs.setCurrentWidget(self.blender_panel)
+        )
         self.pipeline.operation_finished.connect(self._operation_finished)
         self.refresh_environment_button.clicked.connect(self.refresh_environment)
         self.theme_selector.currentIndexChanged.connect(self._theme_changed)
@@ -244,7 +270,9 @@ class MainWindow(QMainWindow):
         self.project_panel.upsert_job(job, index, selected)
 
     def create_job(self) -> None:
-        image, _ = QFileDialog.getOpenFileName(self, "입력 이미지 선택", "", "이미지 (*.png *.jpg *.jpeg)")
+        image, _ = QFileDialog.getOpenFileName(
+            self, "입력 이미지 선택", "", "이미지 (*.png *.jpg *.jpeg)"
+        )
         if not image:
             return
         name, ok = QInputDialog.getText(self, "새 작업", "작업 이름", text=Path(image).stem)
@@ -261,7 +289,9 @@ class MainWindow(QMainWindow):
 
     def select_job(self, job_id: str) -> None:
         if self.pipeline.busy and self.current_job and self.current_job.job_id != job_id:
-            self.statusBar().showMessage("실행 중에도 다른 작업을 볼 수 있지만 실행 버튼은 잠깁니다.")
+            self.statusBar().showMessage(
+                "실행 중에도 다른 작업을 볼 수 있지만 실행 버튼은 잠깁니다."
+            )
         try:
             self.current_job = next(
                 (job for job in self.job_list if job.job_id == job_id), None
@@ -276,7 +306,9 @@ class MainWindow(QMainWindow):
         self.modeling_panel.set_job(self.current_job, self.pipeline.busy)
         self.blender_panel.set_job(self.current_job, self.pipeline.busy)
         self.rigging_panel.set_job(
-            self.current_job, self.pipeline.rigging.available_inputs(self.current_job), self.pipeline.busy
+            self.current_job,
+            self.pipeline.rigging.available_inputs(self.current_job),
+            self.pipeline.busy,
         )
         self.unity_panel.set_job(self.current_job, self.pipeline.busy)
         self.unity_panel.set_recent_projects(
@@ -293,20 +325,42 @@ class MainWindow(QMainWindow):
     def _usable_result(value, suffix) -> bool:
         try:
             path = Path(value) if value else None
-            return bool(path and path.suffix.lower() == suffix and path.is_file() and path.stat().st_size > 0)
+            return bool(
+                path
+                and path.suffix.lower() == suffix
+                and path.is_file()
+                and path.stat().st_size > 0
+            )
         except OSError:
             return False
 
     def _next_step_availability(self):
         job = self.current_job
         if job is None:
-            return {key: (False, "먼저 작업을 선택하세요.") for key in ("blender", "rigging", "unity")}
+            return {
+                key: (False, "먼저 작업을 선택하세요.") for key in ("blender", "rigging", "unity")
+            }
         if self.pipeline.busy:
-            return {key: (False, "실행 중인 작업이 끝나면 이동할 수 있습니다.") for key in ("blender", "rigging", "unity")}
+            return {
+                key: (False, "실행 중인 작업이 끝나면 이동할 수 있습니다.")
+                for key in ("blender", "rigging", "unity")
+            }
         return {
-            "blender": (self._usable_result(job.blender_input_path, ".glb"), "모델 생성 후 사용할 GLB 파일이 필요합니다."),
-            "rigging": (any(self._usable_result(item.path, ".glb") for item in self.pipeline.rigging.available_inputs(job)), "이 작업에 등록된 GLB 결과가 필요합니다."),
-            "unity": (self._usable_result(job.unity_input_path, ".fbx"), "리깅으로 생성된 Humanoid FBX 결과가 필요합니다."),
+            "blender": (
+                self._usable_result(job.blender_input_path, ".glb"),
+                "모델 생성 후 사용할 GLB 파일이 필요합니다.",
+            ),
+            "rigging": (
+                any(
+                    self._usable_result(item.path, ".glb")
+                    for item in self.pipeline.rigging.available_inputs(job)
+                ),
+                "이 작업에 등록된 GLB 결과가 필요합니다.",
+            ),
+            "unity": (
+                self._usable_result(job.unity_input_path, ".fbx"),
+                "리깅으로 생성된 Humanoid FBX 결과가 필요합니다.",
+            ),
         }
 
     def _update_next_steps(self):
@@ -320,8 +374,13 @@ class MainWindow(QMainWindow):
             selected = {key: states[key] for key in card.buttons}
             ready = any(enabled for enabled, reason in selected.values())
             reason = next(iter(selected.values()))[1]
-            card.update_state(instructions[source] if ready else reason,
-                {key: (enabled, instructions[source] if enabled else message) for key, (enabled, message) in selected.items()})
+            card.update_state(
+                instructions[source] if ready else reason,
+                {
+                    key: (enabled, instructions[source] if enabled else message)
+                    for key, (enabled, message) in selected.items()
+                },
+            )
 
     def go_to_next_step(self, destination):
         self._update_next_steps()
@@ -329,7 +388,11 @@ class MainWindow(QMainWindow):
         if not enabled:
             self.statusBar().showMessage(reason, 10000)
             return
-        panels = {"blender": self.blender_panel, "rigging": self.rigging_panel, "unity": self.unity_panel}
+        panels = {
+            "blender": self.blender_panel,
+            "rigging": self.rigging_panel,
+            "unity": self.unity_panel,
+        }
         self._render_job()
         self.tabs.setCurrentWidget(panels[destination])
 
@@ -351,7 +414,8 @@ class MainWindow(QMainWindow):
             )
         except Exception as exc:
             QMessageBox.critical(
-                self, "Unity 연결 실패",
+                self,
+                "Unity 연결 실패",
                 f"{exc}\n\nUnity Editor에서 이 프로젝트를 연 뒤 Console의 "
                 "`[McpBridge] Listening`을 확인하세요.",
             )
@@ -372,7 +436,8 @@ class MainWindow(QMainWindow):
         try:
             result = self.unity.import_humanoid_fbx(self.current_job, project)
             QMessageBox.information(
-                self, "FBX 가져오기 완료",
+                self,
+                "FBX 가져오기 완료",
                 f"Asset: {result.asset_path}\n원본 SHA-256: {result.source_sha256}\n\n"
                 "기존 Asset은 덮어쓰지 않았으며 .meta는 Unity가 생성합니다.",
             )
@@ -391,7 +456,9 @@ class MainWindow(QMainWindow):
             return
         try:
             self.unity.send_prompt(
-                text, include_asset=include_asset, include_current_scene=include_scene,
+                text,
+                include_asset=include_asset,
+                include_current_scene=include_scene,
                 analyze_screenshot=analyze_screenshot,
             )
         except Exception as exc:
@@ -401,7 +468,8 @@ class MainWindow(QMainWindow):
         self.unity.cancel_active()
         self.statusBar().showMessage(
             "Unity Agent 실행을 취소했습니다. 부분 산출물과 로그는 보존됩니다. "
-            "다음 연결에서 Play Mode와 입력 상태를 확인하세요.", 15000,
+            "다음 연결에서 Play Mode와 입력 상태를 확인하세요.",
+            15000,
         )
 
     def accept_unity_review(self, turn_id: str, note: str) -> None:
@@ -417,14 +485,20 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "검토 저장 실패", str(exc))
 
     def repair_unity_turn(
-        self, turn_id: str, feedback: str, include_asset: bool,
-        include_scene: bool, analyze_screenshot: bool,
+        self,
+        turn_id: str,
+        feedback: str,
+        include_asset: bool,
+        include_scene: bool,
+        analyze_screenshot: bool,
     ) -> None:
         if self._unity_blocked_by_pipeline():
             return
         try:
             self.unity.send_review_repair(
-                turn_id, feedback, include_asset=include_asset,
+                turn_id,
+                feedback,
+                include_asset=include_asset,
                 include_current_scene=include_scene,
                 analyze_screenshot=analyze_screenshot,
             )
@@ -474,7 +548,12 @@ class MainWindow(QMainWindow):
         if not self.current_job or self.pipeline.busy:
             return
         try:
-            self.pipeline.start_inspect(self.current_job, suffix=f"v{self.current_job.latest_blender_request.version:03d}" if self.current_job.latest_blender_request else "source")
+            self.pipeline.start_inspect(
+                self.current_job,
+                suffix=f"v{self.current_job.latest_blender_request.version:03d}"
+                if self.current_job.latest_blender_request
+                else "source",
+            )
             self._render_job()
         except Exception as exc:
             QMessageBox.critical(self, "장면 검사 실패", str(exc))
@@ -509,7 +588,8 @@ class MainWindow(QMainWindow):
         version = self.jobs.next_rigging_version(self.current_job)
         output = self.jobs.job_directory(self.current_job.job_id) / "rigging" / f"v{version:03d}"
         answer = QMessageBox.question(
-            self, "Humanoid 자동 리깅 최종 확인",
+            self,
+            "Humanoid 자동 리깅 최종 확인",
             "사람형 이족보행 입력임을 확인한 뒤 UniRig을 실행합니다.\n\n"
             f"입력: {Path(selected_input).resolve(strict=False)}\n"
             f"출력: {output.resolve(strict=False)}\n"
@@ -530,13 +610,21 @@ class MainWindow(QMainWindow):
 
     def _unity_blocked_by_pipeline(self) -> bool:
         if self.pipeline.busy:
-            QMessageBox.warning(self, "Unity 작업 대기", "모델링·Blender·리깅 작업이 끝난 뒤 Unity 명령을 실행하세요.")
+            QMessageBox.warning(
+                self,
+                "Unity 작업 대기",
+                "모델링·Blender·리깅 작업이 끝난 뒤 Unity 명령을 실행하세요.",
+            )
             return True
         return False
 
     def _gpu_blocked_by_unity(self) -> bool:
         if self.unity.busy:
-            QMessageBox.warning(self, "GPU 작업 대기", "Unity 연결 또는 명령 처리 중입니다. 완료되거나 취소한 뒤 실행하세요.")
+            QMessageBox.warning(
+                self,
+                "GPU 작업 대기",
+                "Unity 연결 또는 명령 처리 중입니다. 완료되거나 취소한 뒤 실행하세요.",
+            )
             return True
         return False
 
@@ -585,26 +673,45 @@ class MainWindow(QMainWindow):
         self._refresh_widget_style(self.environment_summary)
         for label in self.environment_labels.values():
             heading, separator, model = label.text().partition("\n")
-            label.setText(heading.split(":")[0] + ": 확인 중" + (separator + model if separator else ""))
+            label.setText(
+                heading.split(":")[0] + ": 확인 중" + (separator + model if separator else "")
+            )
             label.setProperty("envState", "checking")
             self._refresh_widget_style(label)
         self.environment_worker = EnvironmentWorker(self.config, self)
         self.environment_worker.completed.connect(self._environment_ready)
-        self.environment_worker.finished.connect(lambda: self.refresh_environment_button.setEnabled(True))
+        self.environment_worker.finished.connect(
+            lambda: self.refresh_environment_button.setEnabled(True)
+        )
         self.environment_worker.start()
 
     def _environment_ready(self, checks: dict) -> None:
-        names = {"modeling": "Pixal3D", "gpu": "GPU", "wsl": "WSL",
-                 "ollama_blender": "Blender 모델", "ollama_unity": "Unity 모델",
-                 "mcp": "Blender MCP", "unirig": "UniRig", "blender": "Blender",
-                 "unity_mcp": "Unity MCP"}
+        names = {
+            "modeling": "Pixal3D",
+            "gpu": "GPU",
+            "wsl": "WSL",
+            "ollama_blender": "Blender 모델",
+            "ollama_unity": "Unity 모델",
+            "mcp": "Blender MCP",
+            "unirig": "UniRig",
+            "blender": "Blender",
+            "unity_mcp": "Unity MCP",
+        }
         issues = []
         for key, label in self.environment_labels.items():
             check = checks.get(key, {"ok": False, "detail": "점검 결과 없음"})
-            label.setText(f"{'●' if check['ok'] else '○'} {names[key]}: {'연결됨' if check['ok'] else '실패'}")
+            label.setText(
+                f"{'●' if check['ok'] else '○'} {names[key]}: {'연결됨' if check['ok'] else '실패'}"
+            )
             if key in {"ollama_blender", "ollama_unity"}:
-                model = self.config.ollama_model if key == "ollama_blender" else self.config.unity_agent_model
-                label.setText(f"{'●' if check['ok'] else '○'} {names[key]}: {check.get('status', '점검 실패')}\n{model}")
+                model = (
+                    self.config.ollama_model
+                    if key == "ollama_blender"
+                    else self.config.unity_agent_model
+                )
+                label.setText(
+                    f"{'●' if check['ok'] else '○'} {names[key]}: {check.get('status', '점검 실패')}\n{model}"
+                )
             label.setToolTip(str(check["detail"]))
             needs_attention = not check["ok"] or bool(check.get("warning"))
             if needs_attention:
@@ -614,7 +721,9 @@ class MainWindow(QMainWindow):
             label.setProperty("envState", "error" if needs_attention else "ok")
             self._refresh_widget_style(label)
         self.environment_summary.setText(f"확인 필요 {len(issues)}건" if issues else "환경 정상")
-        self.environment_summary.setToolTip("\n\n".join(issues) if issues else "연결 상태와 설치 모델 확인을 통과했습니다.")
+        self.environment_summary.setToolTip(
+            "\n\n".join(issues) if issues else "연결 상태와 설치 모델 확인을 통과했습니다."
+        )
         self.environment_summary.setProperty("envState", "error" if issues else "ok")
         self._refresh_widget_style(self.environment_summary)
 
@@ -634,11 +743,17 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "설정 저장 실패", str(exc))
                 return
             self.saved_config = updated
-            QMessageBox.information(self, "설정 저장", "설정을 저장했습니다. 안전한 적용을 위해 ForgeFlow를 다시 실행해 주세요.")
+            QMessageBox.information(
+                self,
+                "설정 저장",
+                "설정을 저장했습니다. 안전한 적용을 위해 ForgeFlow를 다시 실행해 주세요.",
+            )
 
     def closeEvent(self, event) -> None:
         if self.pipeline.busy or self.unity.running:
-            answer = QMessageBox.question(self, "실행 중 종료", "외부 프로세스가 실행 중입니다. 취소하고 종료할까요?")
+            answer = QMessageBox.question(
+                self, "실행 중 종료", "외부 프로세스가 실행 중입니다. 취소하고 종료할까요?"
+            )
             if answer != QMessageBox.StandardButton.Yes:
                 event.ignore()
                 return

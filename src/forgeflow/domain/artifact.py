@@ -19,4 +19,3 @@ class Artifact:
     @classmethod
     def from_dict(cls, value: dict[str, object]) -> "Artifact":
         return cls(**value)  # type: ignore[arg-type]
-

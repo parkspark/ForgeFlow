@@ -57,7 +57,10 @@ class AppConfig:
 
     def save(self) -> None:
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {key: str(value) if isinstance(value, Path) else value for key, value in asdict(self).items()}
+        payload = {
+            key: str(value) if isinstance(value, Path) else value
+            for key, value in asdict(self).items()
+        }
         temporary = self.config_path.with_suffix(".json.tmp")
         temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         os.replace(temporary, self.config_path)
@@ -70,10 +73,17 @@ class AppConfig:
             return default
         payload = json.loads(selected.read_text(encoding="utf-8"))
         path_fields = {
-            "modeling_root", "blender_agent_root", "blender_mcp_root",
-            "unity_agent_root", "unity_mcp_root", "blender_executable", "jobs_root",
+            "modeling_root",
+            "blender_agent_root",
+            "blender_mcp_root",
+            "unity_agent_root",
+            "unity_mcp_root",
+            "blender_executable",
+            "jobs_root",
         }
-        values = {key: Path(value) if key in path_fields else value for key, value in payload.items()}
+        values = {
+            key: Path(value) if key in path_fields else value for key, value in payload.items()
+        }
         if values.get("theme", "dark") not in {"light", "dark"}:
             values["theme"] = "dark"
         return cls(**values)

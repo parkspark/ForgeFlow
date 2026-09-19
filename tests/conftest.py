@@ -1,10 +1,22 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
 
 from forgeflow.config import AppConfig
+
+
+@pytest.fixture(scope="session")
+def qapp():
+    """Keep one offscreen QApplication alive for GUI and process tests."""
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])
+    app.setQuitOnLastWindowClosed(False)
+    yield app
 
 
 @pytest.fixture

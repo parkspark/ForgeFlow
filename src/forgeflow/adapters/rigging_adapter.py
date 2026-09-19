@@ -17,7 +17,6 @@ from forgeflow.services.path_utils import same_path
 
 from .modeling_adapter import ModelingAdapter
 
-
 RIGGING_KINDS = {
     "skeleton_fbx": "{name}_skeleton.fbx",
     "skin_fbx": "{name}_skin.fbx",
@@ -67,7 +66,9 @@ class RiggingAdapter:
         if str(seed).strip() != str(value) and not isinstance(seed, int):
             raise ValueError("Seed는 정수여야 합니다.")
         if not RiggingAdapter.MIN_SEED <= value <= RiggingAdapter.MAX_SEED:
-            raise ValueError(f"Seed 범위는 {RiggingAdapter.MIN_SEED}~{RiggingAdapter.MAX_SEED}입니다.")
+            raise ValueError(
+                f"Seed 범위는 {RiggingAdapter.MIN_SEED}~{RiggingAdapter.MAX_SEED}입니다."
+            )
         return value
 
     @staticmethod
@@ -89,18 +90,22 @@ class RiggingAdapter:
         seen: set[Path] = set()
         blender = sorted(
             (item for item in job.artifacts if item.stage == "blender" and item.kind == "glb"),
-            key=lambda item: (item.version or 0, item.created_at), reverse=True,
+            key=lambda item: (item.version or 0, item.created_at),
+            reverse=True,
         )
         modeling = sorted(
             (item for item in job.artifacts if item.stage == "modeling" and item.kind == "glb"),
-            key=lambda item: item.created_at, reverse=True,
+            key=lambda item: item.created_at,
+            reverse=True,
         )
         for item in [*blender, *modeling]:
             path = Path(item.path).resolve(strict=False)
             if path in seen or not path.is_file() or path.suffix.lower() != ".glb":
                 continue
             seen.add(path)
-            origin = f"Blender v{(item.version or 0):03d}" if item.stage == "blender" else "모델링 원본"
+            origin = (
+                f"Blender v{(item.version or 0):03d}" if item.stage == "blender" else "모델링 원본"
+            )
             candidates.append(RiggingInput(path, item.stage, item.version, f"{origin} · {path}"))
         return candidates
 
@@ -151,7 +156,9 @@ class RiggingAdapter:
         if staged:
             staging_root = self.config.rigging_staging_root.resolve(strict=False)
             if self._contains_whitespace(staging_root):
-                raise ValueError(f"UniRig staging 경로에 공백이 있어 실행할 수 없습니다: {staging_root}")
+                raise ValueError(
+                    f"UniRig staging 경로에 공백이 있어 실행할 수 없습니다: {staging_root}"
+                )
             staging = staging_root / job.job_id / f"v{version:03d}"
             if staging.exists() and any(staging.iterdir()):
                 raise RuntimeError(f"기존 staging 폴더를 재사용할 수 없습니다: {staging}")
@@ -164,25 +171,46 @@ class RiggingAdapter:
         if staged and sha256_file(execution_input) != input_sha256:
             raise RuntimeError("staging 복사 중 입력 GLB 내용이 변경되었습니다.")
         request = RiggingRequest(
-            input_path=str(source), input_sha256=input_sha256,
-            output_directory=str(final_directory.resolve()), version=version,
-            seed=seed_value, safe_name=safe_name,
+            input_path=str(source),
+            input_sha256=input_sha256,
+            output_directory=str(final_directory.resolve()),
+            version=version,
+            seed=seed_value,
+            safe_name=safe_name,
         )
         arguments = [
-            "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-            "-File", str(script), "-InputGlb", str(execution_input.resolve()),
-            "-Name", safe_name, "-OutputDirectory", str(execution_directory.resolve()),
-            "-Seed", str(seed_value),
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script),
+            "-InputGlb",
+            str(execution_input.resolve()),
+            "-Name",
+            safe_name,
+            "-OutputDirectory",
+            str(execution_directory.resolve()),
+            "-Seed",
+            str(seed_value),
         ]
         command = ProcessCommand(self.config.powershell, arguments, self.config.modeling_root)
         return command, RiggingRun(
-            request, source, execution_input.resolve(), execution_directory.resolve(),
-            final_directory.resolve(), staged,
+            request,
+            source,
+            execution_input.resolve(),
+            execution_directory.resolve(),
+            final_directory.resolve(),
+            staged,
         )
 
     @staticmethod
     def expected_paths(directory: Path, safe_name: str) -> dict[str, Path]:
-        return {kind: directory / pattern.format(name=safe_name) for kind, pattern in RIGGING_KINDS.items()}
+        return {
+            kind: directory / pattern.format(name=safe_name)
+            for kind, pattern in RIGGING_KINDS.items()
+        }
 
     def validate_report(self, report_path: Path, expected: dict[str, Path]) -> dict[str, Any]:
         try:
@@ -194,7 +222,11 @@ class RiggingAdapter:
         failures: list[str] = []
         if report.get("status") != "PASS":
             failures.append(f"status={report.get('status')!r}")
-        if isinstance(report.get("bone_count"), bool) or not isinstance(report.get("bone_count"), int) or report["bone_count"] <= 0:
+        if (
+            isinstance(report.get("bone_count"), bool)
+            or not isinstance(report.get("bone_count"), int)
+            or report["bone_count"] <= 0
+        ):
             failures.append("bone_count는 0보다 커야 합니다")
         missing = report.get("missing_required_bones")
         if not isinstance(missing, list) or missing:
@@ -206,7 +238,11 @@ class RiggingAdapter:
         if weighted != vertex_count:
             failures.append(f"weighted_vertices({weighted!r}) != vertex_count({vertex_count!r})")
         influences = report.get("max_influences")
-        if isinstance(influences, bool) or not isinstance(influences, int) or not 1 <= influences <= 4:
+        if (
+            isinstance(influences, bool)
+            or not isinstance(influences, int)
+            or not 1 <= influences <= 4
+        ):
             failures.append(f"max_influences={influences!r} (허용 1~4)")
         for key, kind in (("fbx", "humanoid_fbx"), ("blend", "humanoid_blend")):
             value = report.get(key)
@@ -238,7 +274,9 @@ class RiggingAdapter:
             report["blend"] = str(final_paths["humanoid_blend"].resolve())
             report["fbx"] = str(final_paths["humanoid_fbx"].resolve())
             temporary_report = final_paths["rig_report"].with_suffix(".json.tmp")
-            temporary_report.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+            temporary_report.write_text(
+                json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
             os.replace(temporary_report, final_paths["rig_report"])
 
         ModelingAdapter.verify_artifacts(final_paths.values())
@@ -247,8 +285,15 @@ class RiggingAdapter:
             raise RuntimeError("UniRig 결과 수집 중 입력 원본 GLB 해시가 변경되었습니다.")
 
         artifacts = [
-            Artifact(kind, str(path.resolve()), "rigging", utc_now(), version=run.request.version,
-                     sha256=sha256_file(path), parent_path=str(run.input_path))
+            Artifact(
+                kind,
+                str(path.resolve()),
+                "rigging",
+                utc_now(),
+                version=run.request.version,
+                sha256=sha256_file(path),
+                parent_path=str(run.input_path),
+            )
             for kind, path in final_paths.items()
         ]
         run.request.status = "completed"
@@ -256,7 +301,9 @@ class RiggingAdapter:
         run.request.completed_at = utc_now()
         return artifacts, report
 
-    def build_preview(self, run: RiggingRun, pose: bool = False) -> tuple[ProcessCommand, Path, str]:
+    def build_preview(
+        self, run: RiggingRun, pose: bool = False
+    ) -> tuple[ProcessCommand, Path, str]:
         script = self.config.modeling_root / "scripts" / "render_preview.py"
         if not script.is_file():
             raise ValueError(f"미리보기 스크립트가 없습니다: {script}")
@@ -264,18 +311,35 @@ class RiggingAdapter:
         kind = "pose_preview" if pose else "rest_preview"
         output = run.final_directory / ("pose_preview.png" if pose else "rest_preview.png")
         arguments = [
-            "--background", "--factory-startup", "--disable-autoexec", "--python", str(script), "--",
-            "--input", str(blend), "--output", str(output),
+            "--background",
+            "--factory-startup",
+            "--disable-autoexec",
+            "--python",
+            str(script),
+            "--",
+            "--input",
+            str(blend),
+            "--output",
+            str(output),
         ]
         if pose:
             arguments.append("--pose")
-        return ProcessCommand(str(self.config.blender_executable), arguments, run.final_directory), output, kind
+        return (
+            ProcessCommand(str(self.config.blender_executable), arguments, run.final_directory),
+            output,
+            kind,
+        )
 
     def collect_preview(self, run: RiggingRun, output: Path, kind: str) -> Artifact:
         ModelingAdapter.verify_artifacts([output])
         return Artifact(
-            kind, str(output.resolve()), "rigging", utc_now(), version=run.request.version,
-            sha256=sha256_file(output), parent_path=str(
+            kind,
+            str(output.resolve()),
+            "rigging",
+            utc_now(),
+            version=run.request.version,
+            sha256=sha256_file(output),
+            parent_path=str(
                 self.expected_paths(run.final_directory, run.request.safe_name)["humanoid_blend"]
             ),
         )

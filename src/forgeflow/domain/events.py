@@ -10,4 +10,3 @@ class PipelineEvent:
     stage: str
     message: str = ""
     data: dict[str, Any] = field(default_factory=dict)
-

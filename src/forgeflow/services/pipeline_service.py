@@ -26,8 +26,14 @@ class PipelineService(QObject):
     inspect_ready = Signal(object)
     operation_finished = Signal(str, bool, str)
 
-    def __init__(self, jobs: JobService, modeling: ModelingAdapter, blender: BlenderAdapter,
-                 rigging: RiggingAdapter, parent: QObject | None = None):
+    def __init__(
+        self,
+        jobs: JobService,
+        modeling: ModelingAdapter,
+        blender: BlenderAdapter,
+        rigging: RiggingAdapter,
+        parent: QObject | None = None,
+    ):
         super().__init__(parent)
         self.jobs = jobs
         self.modeling = modeling
@@ -58,11 +64,26 @@ class PipelineService(QObject):
         if job.stages["modeling"].status == "completed":
             raise RuntimeError("완료된 모델링 원본은 덮어쓸 수 없습니다.")
         command, run_root = self.modeling.build_generation(job)
-        log_path = self.jobs.job_directory(job.job_id) / "logs" / f"modeling-attempt-{job.stages['modeling'].attempts + 1:03d}.log"
+        log_path = (
+            self.jobs.job_directory(job.job_id)
+            / "logs"
+            / f"modeling-attempt-{job.stages['modeling'].attempts + 1:03d}.log"
+        )
         self.jobs.set_stage(job, "modeling", "running", log_path=log_path)
-        self._release_models(job, "modeling", releases, log_path,
-            lambda: self._begin(job, "modeling", command, log_path, lambda code: self._generation_finished(job, run_root, code)),
-            lambda message: self._fail_stage(job, "modeling", message))
+        self._release_models(
+            job,
+            "modeling",
+            releases,
+            log_path,
+            lambda: self._begin(
+                job,
+                "modeling",
+                command,
+                log_path,
+                lambda code: self._generation_finished(job, run_root, code),
+            ),
+            lambda message: self._fail_stage(job, "modeling", message),
+        )
 
     def _release_models(self, job, stage, commands, log_path, on_ready, on_failure) -> None:
         if not commands:
@@ -82,7 +103,9 @@ class PipelineService(QObject):
 
     def _generation_finished(self, job: Job, run_root: Path, exit_code: int) -> None:
         if exit_code != 0:
-            self._fail_stage(job, "modeling", f"이미지 생성 프로세스가 종료 코드 {exit_code}로 실패했습니다.")
+            self._fail_stage(
+                job, "modeling", f"이미지 생성 프로세스가 종료 코드 {exit_code}로 실패했습니다."
+            )
             return
         try:
             artifacts = self.modeling.collect_generation(job, run_root)
@@ -90,7 +113,13 @@ class PipelineService(QObject):
             job.blender_input_path = next(item.path for item in artifacts if item.kind == "glb")
             self.jobs.save(job)
             command, preview = self.modeling.build_preview(job)
-            self._begin(job, "modeling_preview", command, self._log_path, lambda code: self._preview_finished(job, preview, code))
+            self._begin(
+                job,
+                "modeling_preview",
+                command,
+                self._log_path,
+                lambda code: self._preview_finished(job, preview, code),
+            )
         except Exception as exc:
             self._fail_stage(job, "modeling", str(exc))
 
@@ -101,30 +130,46 @@ class PipelineService(QObject):
             self.modeling.verify_artifacts([preview])
             self.jobs.add_artifact(
                 job,
-                Artifact("preview", str(preview.resolve()), "modeling", utc_now(), sha256=sha256_file(preview)),
+                Artifact(
+                    "preview",
+                    str(preview.resolve()),
+                    "modeling",
+                    utc_now(),
+                    sha256=sha256_file(preview),
+                ),
                 save=False,
             )
             self.jobs.set_stage(job, "modeling", "completed")
             self.job_changed.emit(job)
-            self.operation_finished.emit("modeling", True, "GLB/BLEND/FBX와 미리보기를 생성했습니다.")
+            self.operation_finished.emit(
+                "modeling", True, "GLB/BLEND/FBX와 미리보기를 생성했습니다."
+            )
         except Exception as exc:
             self._fail_stage(job, "modeling", str(exc))
 
-    def start_inspect(self, job: Job, input_path: Path | None = None, suffix: str = "source") -> None:
+    def start_inspect(
+        self, job: Job, input_path: Path | None = None, suffix: str = "source"
+    ) -> None:
         command, output = self.blender.build_inspect(job, input_path, suffix)
         log_path = self.jobs.job_directory(job.job_id) / "logs" / f"inspect-{suffix}.log"
-        self._begin(job, "inspect", command, log_path, lambda code: self._inspect_finished(output, code))
+        self._begin(
+            job, "inspect", command, log_path, lambda code: self._inspect_finished(output, code)
+        )
 
     def _inspect_finished(self, output: Path, exit_code: int) -> None:
         if exit_code != 0:
-            self.operation_finished.emit("inspect", False, f"장면 검사가 종료 코드 {exit_code}로 실패했습니다.")
+            self.operation_finished.emit(
+                "inspect", False, f"장면 검사가 종료 코드 {exit_code}로 실패했습니다."
+            )
             return
         try:
             payload = json.loads(output.read_text(encoding="utf-8"))
             if not payload.get("success"):
                 raise RuntimeError(payload.get("summary", "장면 검사 실패"))
             self.inspect_ready.emit(payload)
-            self.operation_finished.emit("inspect", True, payload.get("summary", "장면 검사를 완료했습니다."))
+            self.operation_finished.emit(
+                "inspect", True, payload.get("summary", "장면 검사를 완료했습니다.")
+            )
         except Exception as exc:
             self.operation_finished.emit("inspect", False, str(exc))
 
@@ -132,7 +177,13 @@ class PipelineService(QObject):
         command, request = self.blender.build_proposal(job, user_request)
         self.jobs.add_blender_request(job, request)
         log_path = Path(request.output_directory) / "planning.log"
-        self._begin(job, "blender_plan", command, log_path, lambda code: self._proposal_finished(job, request, code))
+        self._begin(
+            job,
+            "blender_plan",
+            command,
+            log_path,
+            lambda code: self._proposal_finished(job, request, code),
+        )
 
     def _proposal_finished(self, job: Job, request: BlenderRequest, exit_code: int) -> None:
         try:
@@ -140,7 +191,9 @@ class PipelineService(QObject):
             self.jobs.save(job)
             self.job_changed.emit(job)
             self.plan_ready.emit(job, request)
-            self.operation_finished.emit("blender_plan", True, envelope["result"].get("summary", "계획 준비 완료"))
+            self.operation_finished.emit(
+                "blender_plan", True, envelope["result"].get("summary", "계획 준비 완료")
+            )
         except Exception as exc:
             request.status = "failed"
             self.jobs.save(job)
@@ -157,9 +210,17 @@ class PipelineService(QObject):
         request.approved_at = utc_now()
         log_path = Path(request.output_directory) / "execution.log"
         self.jobs.set_stage(job, "blender", "running", log_path=log_path)
-        self._begin(job, "blender", command, log_path, lambda code: self._execution_finished(job, request, execution, original_hash, code))
+        self._begin(
+            job,
+            "blender",
+            command,
+            log_path,
+            lambda code: self._execution_finished(job, request, execution, original_hash, code),
+        )
 
-    def _execution_finished(self, job: Job, request: BlenderRequest, execution: Path, original_hash: str, exit_code: int) -> None:
+    def _execution_finished(
+        self, job: Job, request: BlenderRequest, execution: Path, original_hash: str, exit_code: int
+    ) -> None:
         if exit_code != 0:
             request.status = "failed"
             self.jobs.save(job)
@@ -167,7 +228,11 @@ class PipelineService(QObject):
             integrity = ""
             if source.is_file() and sha256_file(source) != original_hash:
                 integrity = " 원본 파일 해시도 변경되었습니다."
-            self._fail_stage(job, "blender", f"Blender 실행 프로세스가 종료 코드 {exit_code}로 실패했습니다.{integrity}")
+            self._fail_stage(
+                job,
+                "blender",
+                f"Blender 실행 프로세스가 종료 코드 {exit_code}로 실패했습니다.{integrity}",
+            )
             return
         try:
             artifacts = self.blender.collect_execution(request, execution, original_hash)
@@ -176,7 +241,9 @@ class PipelineService(QObject):
             job.blender_input_path = glb
             self.jobs.set_stage(job, "blender", "completed")
             self.job_changed.emit(job)
-            self.operation_finished.emit("blender", True, f"Blender v{request.version:03d} 결과를 생성했습니다.")
+            self.operation_finished.emit(
+                "blender", True, f"Blender v{request.version:03d} 결과를 생성했습니다."
+            )
         except Exception as exc:
             request.status = "failed"
             self.jobs.save(job)
@@ -188,9 +255,13 @@ class PipelineService(QObject):
             request.status = "cancelled"
             self.jobs.save(job)
             self.job_changed.emit(job)
-            self.operation_finished.emit("blender_plan", False, "사용자가 실행 계획을 취소했습니다.")
+            self.operation_finished.emit(
+                "blender_plan", False, "사용자가 실행 계획을 취소했습니다."
+            )
 
-    def start_rigging(self, job: Job, selected_input: str | Path | None = None, seed: int | str = 12345) -> None:
+    def start_rigging(
+        self, job: Job, selected_input: str | Path | None = None, seed: int | str = 12345
+    ) -> None:
         if self.busy:
             raise RuntimeError("다른 작업이 실행 중입니다.")
         releases = self.modeling.build_release_ollama()
@@ -202,9 +273,20 @@ class PipelineService(QObject):
         self.jobs.add_rigging_request(job, request)
         log_path = run.final_directory / "rigging.log"
         self.jobs.set_stage(job, "rigging", "running", log_path=log_path)
-        self._release_models(job, "rigging", releases, log_path,
-            lambda: self._begin(job, "rigging", command, log_path, lambda code: self._rigging_finished(job, run, code)),
-            lambda message: self._fail_rigging(job, run, message))
+        self._release_models(
+            job,
+            "rigging",
+            releases,
+            log_path,
+            lambda: self._begin(
+                job,
+                "rigging",
+                command,
+                log_path,
+                lambda code: self._rigging_finished(job, run, code),
+            ),
+            lambda message: self._fail_rigging(job, run, message),
+        )
 
     def _rigging_finished(self, job: Job, run: RiggingRun, exit_code: int) -> None:
         if exit_code != 0:
@@ -212,7 +294,9 @@ class PipelineService(QObject):
             source = Path(run.request.input_path)
             if source.is_file() and sha256_file(source) != run.request.input_sha256:
                 integrity = " 입력 원본 GLB 해시도 변경되었습니다."
-            self._fail_rigging(job, run, f"UniRig 프로세스가 종료 코드 {exit_code}로 실패했습니다.{integrity}")
+            self._fail_rigging(
+                job, run, f"UniRig 프로세스가 종료 코드 {exit_code}로 실패했습니다.{integrity}"
+            )
             return
         try:
             artifacts, _report = self.rigging.collect_rigging(run)
@@ -228,7 +312,9 @@ class PipelineService(QObject):
             command, output, kind = self.rigging.build_preview(run, pose)
             label = "pose" if pose else "rest"
             self._begin(
-                job, f"rigging_preview_{label}", command,
+                job,
+                f"rigging_preview_{label}",
+                command,
                 Path(run.request.output_directory) / "rigging.log",
                 lambda code: self._rigging_preview_finished(job, run, output, kind, pose, code),
             )
@@ -279,7 +365,14 @@ class PipelineService(QObject):
         self._cancelled = True
         self.process.cancel()
 
-    def _begin(self, job: Job, operation: str, command: ProcessCommand, log_path: Path | None, handler: Callable[[int], None]) -> None:
+    def _begin(
+        self,
+        job: Job,
+        operation: str,
+        command: ProcessCommand,
+        log_path: Path | None,
+        handler: Callable[[int], None],
+    ) -> None:
         if self.process.running:
             raise RuntimeError("다른 작업이 실행 중입니다.")
         self._active_job = job
@@ -322,11 +415,22 @@ class PipelineService(QObject):
                 if job and self._operation.startswith("rigging_preview"):
                     request = job.latest_rigging_request
                     if request:
-                        request.preview_warning = "사용자가 미리보기 생성을 취소했습니다. 리그 구조 결과는 유효합니다."
+                        request.preview_warning = (
+                            "사용자가 미리보기 생성을 취소했습니다. 리그 구조 결과는 유효합니다."
+                        )
                         self.jobs.save(job)
-                    self.operation_finished.emit("rigging", True, request.preview_warning if request else "미리보기 취소")
+                    self.operation_finished.emit(
+                        "rigging", True, request.preview_warning if request else "미리보기 취소"
+                    )
                     return
-                if job and self._operation in {"modeling", "modeling_vram", "modeling_preview", "blender", "rigging", "rigging_vram"}:
+                if job and self._operation in {
+                    "modeling",
+                    "modeling_vram",
+                    "modeling_preview",
+                    "blender",
+                    "rigging",
+                    "rigging_vram",
+                }:
                     if self._operation.startswith("modeling"):
                         stage = "modeling"
                     elif self._operation.startswith("rigging"):
@@ -338,7 +442,9 @@ class PipelineService(QObject):
                             request.completed_at = utc_now()
                     else:
                         stage = "blender"
-                    self.jobs.set_stage(job, stage, "cancelled", error="사용자가 실행을 취소했습니다.")
+                    self.jobs.set_stage(
+                        job, stage, "cancelled", error="사용자가 실행을 취소했습니다."
+                    )
                     self.job_changed.emit(job)
                 self.operation_finished.emit(self._operation, False, "실행을 취소했습니다.")
                 return
@@ -349,10 +455,17 @@ class PipelineService(QObject):
                 self._close_log()
 
     def _on_start_error(self, message: str) -> None:
-        handler, self._handler = self._handler, None
+        self._handler = None
         try:
             job = self._active_job
-            if job and self._operation in {"modeling", "modeling_vram", "modeling_preview", "blender", "rigging", "rigging_vram"}:
+            if job and self._operation in {
+                "modeling",
+                "modeling_vram",
+                "modeling_preview",
+                "blender",
+                "rigging",
+                "rigging_vram",
+            }:
                 if self._operation.startswith("modeling"):
                     stage = "modeling"
                 elif self._operation.startswith("rigging"):

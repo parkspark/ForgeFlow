@@ -26,7 +26,10 @@ class ModelingAdapter:
         seen = set()
         for host, model in (
             (self.config.ollama_base_url, self.config.ollama_model),
-            (os.environ.get("OLLAMA_HOST") or "http://127.0.0.1:11434", self.config.unity_agent_model),
+            (
+                os.environ.get("OLLAMA_HOST") or "http://127.0.0.1:11434",
+                self.config.unity_agent_model,
+            ),
         ):
             host = host.rstrip("/")
             normalized_model = model if ":" in model.rsplit("/", 1)[-1] else model + ":latest"
@@ -35,7 +38,9 @@ class ModelingAdapter:
             seen.add((host, normalized_model))
             environment = dict(os.environ)
             environment["OLLAMA_HOST"] = host
-            commands.append(ProcessCommand(executable, ["stop", model], self.config.modeling_root, environment))
+            commands.append(
+                ProcessCommand(executable, ["stop", model], self.config.modeling_root, environment)
+            )
         return commands
 
     def build_generation(self, job: Job) -> tuple[ProcessCommand, Path]:
@@ -47,12 +52,25 @@ class ModelingAdapter:
         run_root = self.jobs.job_directory(job.job_id) / ".runs" / f"modeling-{attempt:03d}"
         run_root.mkdir(parents=True, exist_ok=False)
         arguments = [
-            "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-            "-File", str(script.resolve()), "-Image", str(image), "-Name", "source",
-            "-Seed", str(int(job.generation_settings.get("seed", 42))),
-            "-ArtifactRoot", str(run_root.resolve()),
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script.resolve()),
+            "-Image",
+            str(image),
+            "-Name",
+            "source",
+            "-Seed",
+            str(int(job.generation_settings.get("seed", 42))),
+            "-ArtifactRoot",
+            str(run_root.resolve()),
         ]
-        return ProcessCommand(self.config.powershell, arguments, self.config.modeling_root), run_root
+        return ProcessCommand(
+            self.config.powershell, arguments, self.config.modeling_root
+        ), run_root
 
     def collect_generation(self, job: Job, run_root: Path) -> list[Artifact]:
         source_dir = run_root / "source"
@@ -68,7 +86,13 @@ class ModelingAdapter:
             shutil.copy2(source, temporary)
             os.replace(temporary, destination)
             artifacts.append(
-                Artifact(kind, str(destination.resolve()), "modeling", utc_now(), sha256=sha256_file(destination))
+                Artifact(
+                    kind,
+                    str(destination.resolve()),
+                    "modeling",
+                    utc_now(),
+                    sha256=sha256_file(destination),
+                )
             )
         return artifacts
 
@@ -79,7 +103,18 @@ class ModelingAdapter:
         script = self.config.modeling_root / "scripts" / "render_preview.py"
         command = ProcessCommand(
             str(self.config.blender_executable),
-            ["--background", "--factory-startup", "--disable-autoexec", "--python", str(script), "--", "--input", str(input_glb), "--output", str(output)],
+            [
+                "--background",
+                "--factory-startup",
+                "--disable-autoexec",
+                "--python",
+                str(script),
+                "--",
+                "--input",
+                str(input_glb),
+                "--output",
+                str(output),
+            ],
             directory,
         )
         return command, output

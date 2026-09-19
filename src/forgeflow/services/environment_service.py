@@ -33,10 +33,25 @@ class EnvironmentWorker(QThread):
         checks["mcp_project"] = self._path_check(self.config.mcp_python, "Blender MCP")
         checks["blender"] = self._path_check(self.config.blender_executable, "Blender")
         checks["gpu"] = self._command_check(
-            [shutil.which("nvidia-smi") or "nvidia-smi", "--query-gpu=name", "--format=csv,noheader"], 15
+            [
+                shutil.which("nvidia-smi") or "nvidia-smi",
+                "--query-gpu=name",
+                "--format=csv,noheader",
+            ],
+            15,
         )
         checks["wsl"] = self._command_check(
-            [shutil.which("wsl") or "wsl.exe", "-d", "Ubuntu-24.04", "-u", "park", "--", "printf", "ready"], 20
+            [
+                shutil.which("wsl") or "wsl.exe",
+                "-d",
+                "Ubuntu-24.04",
+                "-u",
+                "park",
+                "--",
+                "printf",
+                "ready",
+            ],
+            20,
         )
         checks["unirig"] = self._unirig_check()
         checks.update(self._ollama_checks())
@@ -89,8 +104,13 @@ class EnvironmentWorker(QThread):
         try:
             result = subprocess.run(
                 [wsl, "-d", "Ubuntu-24.04", "-u", "park", "--", "bash", "-lc", command],
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                encoding="utf-8", errors="replace", timeout=30, check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=30,
+                check=False,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             )
             lines = [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
@@ -106,8 +126,12 @@ class EnvironmentWorker(QThread):
                 detail = f"실행 가능 · commit 경고: 실제 {commit}, 확인 기준 {required_commit}"
             else:
                 detail = f"실행 가능 · commit {commit}"
-            return {"ok": not missing, "detail": detail, "commit": commit,
-                    "warning": bool(commit and commit != required_commit)}
+            return {
+                "ok": not missing,
+                "detail": detail,
+                "commit": commit,
+                "warning": bool(commit and commit != required_commit),
+            }
         except Exception as exc:
             missing.append(str(exc))
             return {"ok": False, "detail": "누락/접근 실패: " + "; ".join(missing)}
@@ -120,12 +144,21 @@ class EnvironmentWorker(QThread):
     def _command_check(command: list[str], timeout: int) -> dict[str, Any]:
         try:
             result = subprocess.run(
-                command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                encoding="utf-8", errors="replace", timeout=timeout, check=False,
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout,
+                check=False,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
             )
             detail = (result.stdout or "").strip().splitlines()
-            return {"ok": result.returncode == 0, "detail": detail[0] if detail else f"종료 코드 {result.returncode}"}
+            return {
+                "ok": result.returncode == 0,
+                "detail": detail[0] if detail else f"종료 코드 {result.returncode}",
+            }
         except Exception as exc:
             return {"ok": False, "detail": str(exc)}
 
@@ -145,7 +178,10 @@ class EnvironmentWorker(QThread):
                 try:
                     with urllib.request.urlopen(base_url + "/api/tags", timeout=5) as response:
                         payload = json.load(response)
-                    endpoints[base_url] = ({item.get("name") for item in payload.get("models", [])}, None)
+                    endpoints[base_url] = (
+                        {item.get("name") for item in payload.get("models", [])},
+                        None,
+                    )
                 except Exception as exc:
                     endpoints[base_url] = (set(), str(exc))
             names, error = endpoints[base_url]

@@ -3,13 +3,13 @@ from __future__ import annotations
 import os
 import subprocess
 from collections.abc import Callable
-from pathlib import Path
 
 from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, Signal
 
 from forgeflow.domain.process import ProcessCommand
 from forgeflow.services.process_control import (
-    terminate_process_tree, terminate_windows_process_tree,
+    terminate_process_tree,
+    terminate_windows_process_tree,
 )
 
 
@@ -66,7 +66,11 @@ class ProcessService(QObject):
             self.process.waitForFinished(3000)
 
     def _drain(self, channel: str) -> None:
-        raw = self.process.readAllStandardOutput() if channel == "OUT" else self.process.readAllStandardError()
+        raw = (
+            self.process.readAllStandardOutput()
+            if channel == "OUT"
+            else self.process.readAllStandardError()
+        )
         text = bytes(raw).decode("utf-8", errors="replace")
         value = self._buffers[channel] + text
         lines = value.splitlines(keepends=True)
@@ -89,7 +93,12 @@ class ProcessService(QObject):
 
 
 class SyncProcessRunner:
-    def run(self, command: ProcessCommand, on_line: Callable[[str, str], None] | None = None, timeout: float | None = None) -> int:
+    def run(
+        self,
+        command: ProcessCommand,
+        on_line: Callable[[str, str], None] | None = None,
+        timeout: float | None = None,
+    ) -> int:
         process = subprocess.Popen(
             [command.executable, *command.arguments],
             cwd=command.cwd,

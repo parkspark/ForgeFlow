@@ -39,6 +39,8 @@ def generate_icon(destination: Path) -> None:
 
 if __name__ == "__main__":
     app = QGuiApplication(sys.argv[:1])
-    target = Path(__file__).resolve().parents[1] / "src" / "forgeflow" / "resources" / "forgeflow.ico"
+    target = (
+        Path(__file__).resolve().parents[1] / "src" / "forgeflow" / "resources" / "forgeflow.ico"
+    )
     generate_icon(target)
     print(target)

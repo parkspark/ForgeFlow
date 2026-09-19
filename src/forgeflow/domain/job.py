@@ -6,12 +6,9 @@ from typing import Any
 
 from .artifact import Artifact
 
-
 SCHEMA_VERSION = 3
 STAGES = ("modeling", "blender", "rigging", "unity")
-STATUSES = {
-    "pending", "running", "awaiting_review", "completed", "failed", "cancelled"
-}
+STATUSES = {"pending", "running", "awaiting_review", "completed", "failed", "cancelled"}
 
 
 def utc_now() -> str:
@@ -143,10 +140,7 @@ class Job:
             )
         if schema_version < 1:
             raise ValueError(f"잘못된 Job 스키마 버전입니다: {schema_version}")
-        stages = {
-            name: StageState(**state)
-            for name, state in value.get("stages", {}).items()
-        }
+        stages = {name: StageState(**state) for name, state in value.get("stages", {}).items()}
         for name in STAGES:
             stages.setdefault(name, StageState())
         artifacts = [Artifact.from_dict(item) for item in value.get("artifacts", [])]
