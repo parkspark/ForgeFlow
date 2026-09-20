@@ -1,6 +1,6 @@
 from forgeflow.adapters.blender_adapter import BlenderAdapter
 from forgeflow.domain.artifact import Artifact
-from forgeflow.domain.job import BlenderRequest, UnityTurn, utc_now
+from forgeflow.domain.job import BlenderRequest, UnitySession, UnityTurn, utc_now
 from forgeflow.services.job_service import JobService
 from forgeflow.services.lineage import invalidate_unity
 from forgeflow.ui.panels.blender_panel import BlenderPanel
@@ -42,6 +42,12 @@ def test_unity_presets_preserve_draft_and_old_approval_is_history(config, image)
     panel = UnityPanel()
     try:
         panel.set_job(job)
+        panel.set_session(UnitySession(
+            "s1", "C:/UnityProject", status="ready",
+            project_identity={
+                "bridgeVersion": "0.6.0", "supportedTools": ["unity_configure_humanoid"],
+            },
+        ))
         panel.input.setPlainText("기존 요청")
         panel.avatar_preset.click()
         assert panel.input.toPlainText().startswith("기존 요청")

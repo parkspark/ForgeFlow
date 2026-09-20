@@ -66,6 +66,7 @@ def collect_changed_assets(jsonl_path: str | Path | None) -> list[str]:
         "unity_create_material": {"assetPath": ".mat"},
         "unity_create_scene": {"path": ".unity", "recoveryPath": ".unity"},
         "unity_instantiate_prefab": {"scenePath": ".unity"},
+        "unity_frame_character": {"backupPath": ".unity", "settingsBackupPath": ".json"},
         "unity_save_scene": {"scene": ".unity"},
         "unity_write_script": {"written": ".cs"},
         "unity_delete_script": {"deleted": ".cs"},

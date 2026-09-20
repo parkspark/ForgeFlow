@@ -57,7 +57,11 @@ def test_laptop_window_keeps_tabs_cancel_and_actions_reachable(config, image, qa
             ),
             (
                 window.unity_panel,
-                [window.unity_panel.connect_button, window.unity_panel.send_button],
+                [
+                    window.unity_panel.connect_button, window.unity_panel.send_button,
+                    window.unity_panel.avatar_preset, window.unity_panel.animation_preset,
+                    window.unity_panel.scene_preset,
+                ],
             ),
         )
         for panel, buttons in actions:
@@ -76,6 +80,9 @@ def test_laptop_window_keeps_tabs_cancel_and_actions_reachable(config, image, qa
                 bounds = button.rect().translated(button.mapTo(window, QPoint()))
                 assert window.rect().contains(bounds), button.text()
                 assert button.visibleRegion().boundingRect().contains(button.rect()), button.text()
+        panel = window.unity_panel
+        assert panel.avatar_preset.geometry().bottom() < panel.scene_preset.geometry().top()
+        assert panel.scene_preset.geometry().bottom() < panel.send_button.geometry().top()
     finally:
         window.progress_panel.finish("modeling", True, "검증 완료")
         window.close()

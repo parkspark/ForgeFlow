@@ -127,3 +127,20 @@ def test_non_object_receipt_is_unavailable(tmp_path, payload):
     path = tmp_path / "receipt.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
     assert parse_receipt(path) == {"automated_status": "unavailable"}
+
+
+def test_camera_backup_manifest_records_only_successful_written_files(tmp_path):
+    path = _write_events(tmp_path, [
+        _result("unity_frame_character", {
+            "backupPath": "Assets/ForgeFlow/job/Backups/BeforeCamera.unity",
+            "settingsBackupPath": "Assets/ForgeFlow/job/Backups/BeforeCamera.json",
+            "scenePath": "Assets/ForgeFlow/job/Scenes/UnsavedCamera.unity",
+        }),
+        _result("unity_frame_character", {
+            "backupPath": "Assets/ForgeFlow/job/Backups/Failed.unity",
+        }, status="error"),
+    ])
+    assert collect_changed_assets(path) == [
+        "Assets/ForgeFlow/job/Backups/BeforeCamera.unity",
+        "Assets/ForgeFlow/job/Backups/BeforeCamera.json",
+    ]

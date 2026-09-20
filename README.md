@@ -49,6 +49,10 @@ ForgeFlow는 기존 Pixal3D 이미지→3D 생성기, 승인 기반 Blender 자�
 
 v0.2.0의 단계 간 연결·리깅 보존·Unity 애니메이션 개선과 검증 범위: [워크플로 개선 기록](docs/workflow-improvements-2026-09-20.md).
 
+다음 개선 요구사항과 우선순위: [후속 개선 요구사항](docs/future-improvement-requirements-2026-09-20.md).
+
+P0 카메라 자동 맞춤과 Bridge 호환성 확인: [구현·검증 기록](docs/p0-improvements-2026-09-20.md).
+
 ## 설치와 실행
 
 앱의 `설정`에서 다음 실행부터 사용할 프로젝트 경로, Blender 실행 파일, 작업 루트, Ollama 주소/모델을 저장할 수 있습니다. ForgeFlow는 기존 시스템에서 확인한 `qwen3-coder:30b`와 설치된 Blender 5.2 경로를 기본값으로 사용하며 기존 프로젝트 설정 파일을 수정하지 않습니다.

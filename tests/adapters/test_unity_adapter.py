@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from forgeflow.adapters.unity.bridge import REQUIRED_ANIMATION_TOOLS
 from forgeflow.adapters.unity_adapter import UnityAdapter
 from forgeflow.domain.job import UnitySession, UnityTurn
 from forgeflow.domain.process import ProcessCommand
@@ -43,7 +44,7 @@ def unity_project(tmp_path: Path) -> Path:
 def _adapter(config, image, unity_project):
     jobs = JobService(config.jobs_root)
     job = jobs.create("unity", image)
-    adapter = UnityAdapter(config, jobs)
+    adapter = UnityAdapter(replace(config, unity_mcp_root=unity_project.parent / "unity-mcp"), jobs)
     adapter.job = job
     adapter.session = UnitySession("session-test", str(unity_project), status="ready")
     adapter.process = FakeProcess()
@@ -125,6 +126,91 @@ def test_project_identity_mismatch_is_blocked(config, image, unity_project, tmp_
     adapter._handle_event({"type": "session_ready", "projectPath": str(tmp_path / "Other Project")})
     assert adapter.session.status == "failed"
     assert "불일치" in adapter.session.error
+
+
+def test_bridge_handshake_persists_fingerprints_and_logs_at_connection(config, image, unity_project):
+    jobs, job, adapter = _adapter(config, image, unity_project)
+    jobs.add_unity_session(job, adapter.session)
+    source = adapter.config.unity_mcp_root / "UnityBridge/UnityMcpBridge.cs"
+    installed = unity_project / "Assets/Editor/UnityMcpBridge.cs"
+    source.parent.mkdir(parents=True)
+    installed.parent.mkdir(parents=True)
+    source.write_text('private const string BridgeVersion = "0.6.0";', encoding="utf-8")
+    installed.write_bytes(b"installed Bridge 0.5.0")
+    logs = []
+    adapter.log_received.connect(logs.append)
+    metadata = {
+        "projectPath": str(unity_project), "bridgeVersion": "0.5.0",
+        "supportedTools": list(REQUIRED_ANIMATION_TOOLS),
+        "protocolVersion": 2, "capabilities": ["jsonl"],
+        "bridgeSha256": "a" * 64, "bridgeSourcePath": str(installed),
+        "bridgeSourceDiskSha256": sha256_file(installed),
+        "bridgeSourceHashKind": "startup", "bridgeSourceMatchesDisk": False,
+    }
+
+    adapter._handle_event({"type": "session_ready", **metadata})
+
+    restored = jobs.load(job.job_id)
+    identity = restored.unity_sessions[-1].project_identity
+    assert restored.schema_version == job.schema_version == 4
+    assert restored.unity_sessions[-1].status == "ready"
+    assert all(identity[key] == value for key, value in metadata.items())
+    assert identity["sourceBridgeVersion"] == "0.6.0"
+    assert identity["sourceBridgeSha256"] == sha256_file(source)
+    assert identity["installedBridgeSha256"] == sha256_file(installed)
+    assert identity["installedBridgePath"] == str(installed)
+    assert sha256_file(source) in logs[-1] and sha256_file(installed) in logs[-1]
+    assert "source version=0.6.0" in logs[-1]
+    assert "kind=startup" in logs[-1] and "source matches disk=False" in logs[-1]
+    assert "a" * 64 in logs[-1]
+    recorded = json.loads(adapter._session_log.read_text(encoding="utf-8"))
+    assert recorded["type"] == "bridge_diagnostics"
+    assert recorded["installedBridgeSha256"] == sha256_file(installed)
+    with pytest.raises(RuntimeError, match="0.6.0"):
+        adapter.send_prompt("unity_configure_humanoid로 Avatar를 준비해줘")
+    assert adapter.ready
+    assert adapter.send_prompt("현재 씬을 분석해줘").status == "running"
+
+
+@pytest.mark.parametrize("metadata", [
+    {},
+    {"bridgeVersion": "0.5.0", "supportedTools": list(REQUIRED_ANIMATION_TOOLS)},
+    {"bridgeVersion": "0.6.0", "supportedTools": ["unity_configure_humanoid"]},
+])
+def test_unsupported_presets_never_reach_model_and_general_chat_still_works(
+    config, image, unity_project, metadata
+):
+    _jobs, job, adapter = _adapter(config, image, unity_project)
+    adapter._handle_event({"type": "session_ready", "projectPath": str(unity_project), **metadata})
+    with pytest.raises(RuntimeError, match="Bridge 설치 경로"):
+        adapter.send_prompt("선택한 FBX의 Avatar와 애니메이션 클립을 검사해줘.")
+    assert job.unity_turns == []
+    assert adapter._active_turn is None
+    assert list((adapter._session_dir / "turns").iterdir()) == []
+    assert adapter.process.stdin.getvalue() == ""
+    assert adapter.ready
+    adapter.send_prompt("현재 씬을 분석해줘")
+    assert json.loads(adapter.process.stdin.getvalue())["user_text"] == "현재 씬을 분석해줘"
+
+
+def test_supported_animation_request_is_sent_and_repair_feedback_is_guarded(
+    config, image, unity_project
+):
+    _jobs, job, adapter = _adapter(config, image, unity_project)
+    source = UnityTurn("old", "session-test", "씬을 확인해줘", "effective", status="failed")
+    job.unity_turns.append(source)
+    with pytest.raises(RuntimeError, match="unity_create_animation_clip"):
+        adapter.send_review_repair(source.turn_id, "unity_create_animation_clip으로 수정해줘")
+    assert adapter.process.stdin.getvalue() == ""
+    adapter._handle_event({
+        "type": "session_ready", "projectPath": str(unity_project),
+        "bridgeVersion": "0.6.0", "supportedTools": list(REQUIRED_ANIMATION_TOOLS),
+        "bridgeSha256": "a" * 64, "bridgeSourceDiskSha256": "b" * 64,
+        "bridgeSourceHashKind": "startup", "bridgeSourceMatchesDisk": False,
+    })
+    turn = adapter.send_prompt("선택한 FBX의 Avatar와 애니메이션 클립을 검사해줘.")
+    assert json.loads(adapter.process.stdin.getvalue())["id"] == turn.turn_id
+    assert turn.status == "running"
 
 
 def test_unity_session_and_turn_round_trip(config, image, unity_project):

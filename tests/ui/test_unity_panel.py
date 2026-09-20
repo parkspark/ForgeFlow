@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QTextCursor
 
+from forgeflow.adapters.unity.bridge import FRAMING_TOOLS, REQUIRED_ANIMATION_TOOLS
 from forgeflow.domain.job import Job, UnitySession, UnityTurn
 from forgeflow.ui.panels.unity_panel import UnityPanel
 from forgeflow.ui.theme import build_stylesheet
@@ -44,6 +46,178 @@ def ready_panel() -> UnityPanel:
     panel.set_job(make_job())
     panel.set_session(UnitySession("session-001", "C:/UnityProject", status="ready"))
     return panel
+
+
+def bridge_panel(metadata=None) -> UnityPanel:
+    panel = UnityPanel()
+    job = make_job()
+    job.unity_asset_path = "Assets/ForgeFlow/job-unity/Models/v001/Character.fbx"
+    panel.set_job(job)
+    panel.set_session(UnitySession(
+        "session-001", "C:/UnityProject", status="ready", project_identity=metadata,
+    ))
+    return panel
+
+
+@pytest.mark.parametrize("metadata", [
+    None,
+    {"bridgeVersion": "0.5.0", "supportedTools": list(REQUIRED_ANIMATION_TOOLS)},
+    {"bridgeVersion": "0.6.0", "supportedTools": []},
+])
+def test_legacy_or_incompatible_bridge_disables_presets_without_blocking_chat(qapp, metadata):
+    panel = bridge_panel(metadata)
+    assert not panel.avatar_preset.isEnabled()
+    assert not panel.animation_preset.isEnabled()
+    assert not panel.scene_preset.isEnabled()
+    assert "현재" in panel.bridge_status.text() and "0.6.0" in panel.bridge_status.text()
+    assert "Avatar: 미지원" in panel.bridge_tools_status.text()
+    assert "Clip: 미지원" in panel.bridge_tools_status.text()
+    assert "Controller: 미지원" in panel.bridge_tools_status.text()
+    assert "UnityMcpBridge.cs" in panel.bridge_guidance.text()
+    assert "일반 채팅" in panel.bridge_guidance.text()
+    panel.input.setPlainText("현재 씬을 분석해줘")
+    assert panel.send_button.isEnabled()
+    sent = []
+    panel.send_requested.connect(lambda *args: sent.append(args))
+    panel._send()
+    assert sent[0][0] == "현재 씬을 분석해줘"
+    panel.close()
+
+
+def test_modern_bridge_shows_ready_groups_and_presets_respect_busy_and_asset_state(qapp):
+    panel = bridge_panel({
+        "bridgeVersion": "0.6.0", "supportedTools": [*REQUIRED_ANIMATION_TOOLS, *FRAMING_TOOLS],
+    })
+    assert "Avatar: 준비 · Clip: 준비 · Controller: 준비" == panel.bridge_tools_status.text()
+    assert panel.bridge_guidance.isHidden()
+    for preset in (panel.avatar_preset, panel.animation_preset, panel.scene_preset):
+        assert preset.isEnabled()
+    panel.input.setPlainText("작성 중인 요청")
+    panel.animation_preset.click()
+    assert panel.input.toPlainText().startswith("작성 중인 요청\n\n")
+    assert panel.send_button.isEnabled()
+    panel.set_job(panel.job, busy=True)
+    assert not panel.animation_preset.isEnabled()
+    panel.job.unity_asset_path = None
+    panel.set_job(panel.job)
+    assert not panel.avatar_preset.isEnabled()
+    assert not panel.scene_preset.isEnabled()
+    panel.close()
+
+
+def test_partial_tools_show_exact_missing_tool_and_actual_install_path(qapp):
+    installed = "C:/UnityProject/Assets/Editor/McpBridge/UnityMcpBridge.cs"
+    panel = bridge_panel({
+        "bridgeVersion": "0.6.0",
+        "supportedTools": [tool for tool in REQUIRED_ANIMATION_TOOLS
+                           if tool != "unity_create_animator_controller"],
+        "installedBridgePath": installed,
+    })
+    assert panel.avatar_preset.isEnabled()
+    assert not panel.animation_preset.isEnabled()
+    assert "Avatar: 준비 · Clip: 준비 · Controller: 미지원" == panel.bridge_tools_status.text()
+    assert "unity_create_animator_controller" in panel.bridge_guidance.text()
+    assert installed in panel.bridge_guidance.text()
+    panel.avatar_preset.click()
+    assert panel.send_button.isEnabled()
+    panel.close()
+
+
+def test_saved_preset_and_shortcuts_are_rechecked_after_reconnection(qapp):
+    panel = bridge_panel({
+        "bridgeVersion": "0.6.0", "supportedTools": list(REQUIRED_ANIMATION_TOOLS),
+    })
+    panel.animation_preset.click()
+    draft = panel.input.toPlainText()
+    panel.set_session(UnitySession("legacy", "C:/UnityProject", status="ready"))
+    sent = []
+    panel.send_requested.connect(lambda *args: sent.append(args))
+    panel.send_shortcut.activated.emit()
+    panel.send_keypad_shortcut.activated.emit()
+    assert sent == []
+    assert not panel.send_button.isEnabled()
+    assert panel.input.toPlainText() == draft
+    assert "필수 도구 누락" in panel.request_status.text()
+    panel.set_session(UnitySession(
+        "upgraded", "C:/UnityProject", status="ready",
+        project_identity={"bridgeVersion": "0.6.0", "supportedTools": list(REQUIRED_ANIMATION_TOOLS)},
+    ))
+    assert panel.send_button.isEnabled()
+    assert panel.bridge_guidance.isHidden()
+    panel.send_shortcut.activated.emit()
+    assert sent[0][0] == draft
+    panel.close()
+
+
+def test_animation_review_repair_is_gated_even_when_current_draft_is_general_chat(qapp):
+    panel = bridge_panel()
+    turn = make_turn("failed")
+    panel.job.unity_turns.append(turn)
+    panel.set_job(panel.job)
+    panel.input.setPlainText("현재 씬을 분석해줘")
+    panel.review_note.setPlainText("unity_create_animation_clip으로 클립을 만들어줘")
+    assert panel.send_button.isEnabled()
+    assert not panel.repair_button.isEnabled()
+    assert "unity_create_animation_clip" in panel.repair_button.toolTip()
+    panel.review_note.setPlainText("현재 오브젝트 이름을 확인해줘")
+    assert panel.repair_button.isEnabled()
+    turn.user_text = "선택한 FBX의 Avatar와 애니메이션 클립을 검사해줘."
+    panel.set_job(panel.job)
+    assert not panel.repair_button.isEnabled()
+    panel.close()
+
+
+def test_scene_preset_requires_framing_tool_and_saves_new_scoped_scene_before_capture(qapp):
+    metadata = {"bridgeVersion": "0.6.0", "supportedTools": list(REQUIRED_ANIMATION_TOOLS)}
+    panel = bridge_panel(metadata)
+    assert not panel.scene_preset.isEnabled()
+    assert "unity_frame_character" in panel.scene_preset.toolTip()
+    metadata["supportedTools"].extend(FRAMING_TOOLS)
+    panel.set_session(panel.session)
+    panel.scene_preset.click()
+    prompt = panel.input.toPlainText()
+    assert "Assets/ForgeFlow/job-unity/" in prompt
+    assert "기존 사용자 씬은 수정하지 말고" in prompt
+    assert prompt.index("먼저 저장") < prompt.index("카메라·조명 설정을 백업")
+    assert prompt.index("백업") < prompt.index("unity_frame_character") < prompt.index("스크린샷")
+    assert "새로 만든 ForgeFlow 씬에서만" in prompt
+    assert panel.include_asset.isChecked()
+    assert panel.send_button.isEnabled()
+    panel.close()
+
+
+def test_disconnected_presets_ignore_cached_compatible_identity(qapp):
+    panel = bridge_panel({
+        "bridgeVersion": "0.6.0", "supportedTools": list(REQUIRED_ANIMATION_TOOLS),
+    })
+    panel.session.status = "closed"
+    panel.set_session(panel.session)
+    assert not panel.avatar_preset.isEnabled()
+    assert not panel.animation_preset.isEnabled()
+    assert "확인 전" in panel.bridge_tools_status.text()
+    assert panel.bridge_guidance.isHidden()
+    panel.close()
+
+
+def test_third_preset_does_not_increase_panel_minimum_width(qapp):
+    panel = bridge_panel({
+        "bridgeVersion": "0.6.0", "supportedTools": [*REQUIRED_ANIMATION_TOOLS, *FRAMING_TOOLS],
+    })
+    panel.setStyleSheet(build_stylesheet("dark"))
+    panel.resize(853, 533)
+    panel.show()
+    qapp.processEvents()
+    with_scene_preset = panel.minimumSizeHint().width()
+    panel.scene_preset.hide()
+    qapp.processEvents()
+    assert panel.minimumSizeHint().width() == with_scene_preset
+    panel.scene_preset.show()
+    qapp.processEvents()
+    assert panel.scene_preset.visibleRegion().boundingRect().contains(panel.scene_preset.rect())
+    assert panel.avatar_preset.geometry().bottom() < panel.scene_preset.geometry().top()
+    assert panel.scene_preset.geometry().bottom() < panel.send_button.geometry().top()
+    assert panel.sidebar_scroll.horizontalScrollBar().maximum() == 0
+    panel.close()
 
 
 def test_disconnected_shortcut_keeps_draft_and_does_not_send(qapp):

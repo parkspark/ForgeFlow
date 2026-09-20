@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtGui import QKeySequence, QPixmap, QShortcut, QTextCursor
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLayout,
     QLineEdit,
     QPlainTextEdit,
     QPushButton,
@@ -26,9 +27,31 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from forgeflow.adapters.unity.bridge import (
+    AVATAR_TOOLS,
+    BRIDGE_TOOL_GROUPS,
+    FRAMING_TOOLS,
+    MINIMUM_ANIMATION_BRIDGE_VERSION,
+    REQUIRED_ANIMATION_TOOLS,
+    bridge_compatibility,
+    request_bridge_problem,
+)
+from forgeflow.adapters.unity.project import safe_job_id
 from forgeflow.domain.job import Job, UnitySession, UnityTurn
 
 from ..status import status_text
+
+
+class _UnityChatGroup(QGroupBox):
+    def event(self, event) -> bool:
+        handled = super().event(event)
+        if event.type() in {QEvent.Type.Resize, QEvent.Type.LayoutRequest} and self.layout():
+            # QSplitter does not propagate height-for-width to the outer scroll
+            # area. Reserve the wrapped content's height so actions stay reachable.
+            height = self.layout().totalHeightForWidth(self.width())
+            if height >= 0 and self.minimumHeight() != height:
+                self.setMinimumHeight(height)
+        return handled
 
 
 class UnityPanel(QWidget):
@@ -78,7 +101,7 @@ class UnityPanel(QWidget):
     def _build_chat(self) -> QGroupBox:
         # The conversation is the primary workspace and always receives most
         # of the available width and height.
-        chat_group = QGroupBox("Unity 텍스트 채팅")
+        chat_group = _UnityChatGroup("Unity 텍스트 채팅")
         chat_group.setObjectName("unityChatGroup")
         chat_layout = QVBoxLayout(chat_group)
         chat_layout.setContentsMargins(12, 16, 12, 12)
@@ -121,6 +144,7 @@ class UnityPanel(QWidget):
         composer = QWidget()
         composer.setObjectName("unityComposer")
         composer_layout = QVBoxLayout(composer)
+        composer_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         composer_layout.setContentsMargins(10, 10, 10, 10)
         composer_layout.setSpacing(8)
         self.request_status = QLabel()
@@ -154,9 +178,10 @@ class UnityPanel(QWidget):
         options.addWidget(self.analyze_screenshot)
         options.addStretch()
         composer_layout.addLayout(options)
-        presets = QHBoxLayout()
+        presets = QGridLayout()
         self.avatar_preset = QPushButton("Avatar 준비 요청")
         self.animation_preset = QPushButton("애니메이션 연결 요청")
+        self.scene_preset = QPushButton("캐릭터 씬 구성 요청")
         self.avatar_preset.clicked.connect(
             lambda: self._insert_preset(
                 "선택한 FBX를 Humanoid로 구성하고 재임포트해줘. Avatar가 유효한 사람형인지와 필수 본 매핑을 확인하고 결과를 알려줘."
@@ -169,9 +194,11 @@ class UnityPanel(QWidget):
                 "Play Mode에서 실제 클립, 시간 진행과 본 변형을 확인하고 검증 후 Play Mode를 종료해줘."
             )
         )
-        presets.addWidget(self.avatar_preset)
-        presets.addWidget(self.animation_preset)
-        presets.addStretch()
+        self.scene_preset.clicked.connect(self._insert_scene_preset)
+        presets.addWidget(self.avatar_preset, 0, 0)
+        presets.addWidget(self.animation_preset, 0, 1)
+        presets.addWidget(self.scene_preset, 1, 0, 1, 2)
+        presets.setColumnStretch(2, 1)
         composer_layout.addLayout(presets)
         actions = QHBoxLayout()
         actions.addStretch()
@@ -265,11 +292,17 @@ class UnityPanel(QWidget):
         self.agent_status = QLabel("Unity Agent: 연결 안 됨")
         self.mcp_status = QLabel("Unity MCP: 확인 전")
         self.bridge_status = QLabel("Editor Bridge: 확인 전")
+        self.bridge_tools_status = QLabel("Avatar · Clip · Controller: 확인 전")
+        self.bridge_guidance = QLabel()
+        self.bridge_guidance.setTextFormat(Qt.TextFormat.PlainText)
+        self.bridge_guidance.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.identity_status = QLabel("실제 프로젝트 identity: 확인 전")
         for widget in (
             self.agent_status,
             self.mcp_status,
             self.bridge_status,
+            self.bridge_tools_status,
+            self.bridge_guidance,
             self.identity_status,
         ):
             self._make_wrapping_label_shrinkable(widget)
@@ -433,10 +466,28 @@ class UnityPanel(QWidget):
         self._refresh_actions()
 
     def _insert_preset(self, text: str) -> None:
+        if not self._can_request():
+            return
+        if self._request_bridge_problem(text):
+            self._submission_notice = self._request_bridge_problem(text)
+            self._refresh_actions()
+            return
         current = self.input.toPlainText().strip()
         self.input.setPlainText(current + "\n\n" + text if current else text)
         self.include_asset.setChecked(True)
         self.input.setFocus()
+
+    def _insert_scene_preset(self) -> None:
+        if not self.job:
+            return
+        output_root = f"Assets/ForgeFlow/{safe_job_id(self.job.job_id)}/"
+        self._insert_preset(
+            f"선택한 FBX로 새 ForgeFlow 씬을 만들고 {output_root} 아래에 새 파일로 먼저 저장해줘. "
+            "기존 사용자 씬은 수정하지 말고, 카메라·조명 설정을 백업한 뒤 "
+            "새로 만든 ForgeFlow 씬에서만 unity_frame_character를 호출해 캐릭터 전신 구도를 맞춰줘. "
+            "구도 결과를 확인하고 씬을 저장한 다음 Play 전후 스크린샷을 찍어줘. "
+            "검증 후 Play Mode를 종료해줘."
+        )
 
     def _render_history(self, job: Job) -> None:
         lines: list[str] = []
@@ -489,6 +540,34 @@ class UnityPanel(QWidget):
         dependent_text = "연결됨" if ready else ("연결 실패" if failed else "확인 전")
         self._set_connection_label(self.mcp_status, f"Unity MCP  ·  {dependent_text}", state)
         self._set_connection_label(self.bridge_status, f"Editor Bridge  ·  {dependent_text}", state)
+        if ready:
+            compatibility = bridge_compatibility(session.project_identity, session.project_path)
+            self._set_connection_label(
+                self.bridge_status,
+                f"Editor Bridge  ·  현재 {compatibility.current_version} / "
+                f"필요 ≥ {MINIMUM_ANIMATION_BRIDGE_VERSION}",
+                "ok" if compatibility.ready else "error",
+            )
+            groups = [
+                f"{name}: " + (
+                    "준비" if bridge_compatibility(
+                        session.project_identity, session.project_path, tools
+                    ).ready else "미지원"
+                )
+                for name, tools in BRIDGE_TOOL_GROUPS.items()
+            ]
+            self._set_connection_label(
+                self.bridge_tools_status, " · ".join(groups),
+                "ok" if compatibility.ready else "error",
+            )
+            self.bridge_guidance.setText(compatibility.guidance)
+            self.bridge_guidance.setVisible(not compatibility.ready)
+        else:
+            self._set_connection_label(
+                self.bridge_tools_status, "Avatar · Clip · Controller: 확인 전", "idle"
+            )
+            self.bridge_guidance.clear()
+            self.bridge_guidance.hide()
         if session and session.error and failed:
             self._set_connection_label(self.identity_status, f"연결 오류: {session.error}", "error")
         elif session and session.project_identity:
@@ -525,6 +604,13 @@ class UnityPanel(QWidget):
         self._submission_notice = ""
         self._refresh_actions()
 
+    def _request_bridge_problem(self, *requests: str) -> str:
+        if not self.session or self.session.status != "ready":
+            return ""
+        return request_bridge_problem(
+            self.session.project_identity, self.session.project_path, *requests
+        )
+
     def _can_request(self) -> bool:
         running = bool(
             self._latest_turn
@@ -554,11 +640,23 @@ class UnityPanel(QWidget):
             and self._latest_turn.session_id == self.session.session_id
         )
         can_request = self._can_request()
-        for button in (self.avatar_preset, self.animation_preset):
-            button.setEnabled(
-                bool(self.job and self.job.unity_asset_path) and not self._busy and not running
+        for button, tools in (
+            (self.avatar_preset, AVATAR_TOOLS),
+            (self.animation_preset, REQUIRED_ANIMATION_TOOLS),
+            (self.scene_preset, FRAMING_TOOLS),
+        ):
+            compatibility = bridge_compatibility(
+                self.session.project_identity if self.session else None,
+                self.session.project_path if self.session else self.project_path.text(), tools,
             )
-        self.send_button.setEnabled(can_request and bool(self.input.toPlainText().strip()))
+            button.setEnabled(
+                can_request and bool(self.job.unity_asset_path) and compatibility.ready
+            )
+            button.setToolTip(compatibility.guidance)
+        problem = self._request_bridge_problem(self.input.toPlainText())
+        self.send_button.setEnabled(
+            can_request and bool(self.input.toPlainText().strip()) and not problem
+        )
         self.cancel_button.setEnabled(ready and running)
         self.connect_button.setEnabled(
             bool(self.job and self.project_path.text().strip())
@@ -591,6 +689,8 @@ class UnityPanel(QWidget):
             message = (
                 "명령을 실행 중입니다. 다음 요청을 작성해 두거나 현재 실행을 취소할 수 있습니다."
             )
+        elif problem:
+            message = problem
         elif self.job.stages["unity"].stale_reason:
             message = self._submission_notice or self.job.stages["unity"].stale_reason
         else:
@@ -610,11 +710,15 @@ class UnityPanel(QWidget):
             current_turn
             and (turn.status in {"failed", "cancelled"} or turn.human_review_status == "rejected")
         )
+        repair_problem = self._request_bridge_problem(
+            turn.user_text if turn else "", self.review_note.toPlainText()
+        )
         self.repair_button.setEnabled(
             can_request and repairable and bool(self.review_note.toPlainText().strip())
+            and not repair_problem
         )
         self.repair_button.setToolTip(
-            "검토 메모에 바꿀 내용을 적고 연결 상태를 확인한 뒤 수정 요청을 보내세요."
+            repair_problem or "검토 메모에 바꿀 내용을 적고 연결 상태를 확인한 뒤 수정 요청을 보내세요."
         )
         for button, kind in (
             (self.screenshot_button, "screenshot"),
@@ -783,6 +887,9 @@ class UnityPanel(QWidget):
     def _send(self) -> None:
         text = self.input.toPlainText()
         if not self._can_request() or not text.strip():
+            return
+        if self._request_bridge_problem(text):
+            self._refresh_actions()
             return
         previous_id = self._latest_turn.turn_id if self._latest_turn else None
         self._submitting = True

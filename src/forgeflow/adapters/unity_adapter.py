@@ -22,6 +22,7 @@ from forgeflow.services.lineage import invalidate_unity
 from forgeflow.services.path_utils import same_path
 from forgeflow.services.process_control import terminate_process_tree
 
+from .unity.bridge import collect_bridge_diagnostics, request_bridge_problem
 from .unity.project import (
     UNITY_PROJECT_MARKERS as UNITY_PROJECT_MARKERS,
 )
@@ -339,7 +340,29 @@ class UnityAdapter(QObject):
                     "projectPath": actual,
                     "unityVersion": event.get("unityVersion"),
                     "productName": event.get("productName"),
+                    **{key: event.get(key) for key in (
+                        "protocolVersion", "capabilities", "bridgeVersion", "supportedTools",
+                        "bridgeSha256", "bridgeSourcePath",
+                        "bridgeSourceDiskSha256", "bridgeSourceHashKind", "bridgeSourceMatchesDisk",
+                    )},
+                    **collect_bridge_diagnostics(self.config.unity_mcp_root, actual, event),
                 }
+                identity = self.session.project_identity
+                self._record_event(json.dumps(
+                    {"type": "bridge_diagnostics", **identity}, ensure_ascii=False
+                ))
+                self.log_received.emit(
+                    f"Unity Bridge: running={identity['bridgeVersion'] or 'unknown'}; "
+                    f"source version={identity['sourceBridgeVersion'] or 'unknown'}, "
+                    f"SHA-256={identity['sourceBridgeSha256'] or 'unavailable'} "
+                    f"({identity['sourceBridgePath']}); "
+                    f"installed disk SHA-256={identity['installedBridgeSha256'] or 'unavailable'} "
+                    f"({identity['installedBridgePath']}); "
+                    f"reported source SHA-256={identity['bridgeSha256'] or 'unavailable'} "
+                    f"(kind={identity['bridgeSourceHashKind'] or 'unknown'}, not a compiled DLL hash); "
+                    f"reported disk SHA-256={identity['bridgeSourceDiskSha256'] or 'unavailable'}; "
+                    f"source matches disk={identity['bridgeSourceMatchesDisk']}"
+                )
                 self.session.model = str(event.get("model") or self.session.model or "")
                 self._save_job()
                 self.session_changed.emit(self.session)
@@ -430,6 +453,12 @@ class UnityAdapter(QObject):
         exact_text = user_text
         if not isinstance(exact_text, str) or not exact_text.strip():
             raise ValueError("Unity 명령을 입력하세요.")
+        problem = request_bridge_problem(
+            self.session.project_identity, self.session.project_path,
+            exact_text, human_review_feedback or "",
+        )
+        if problem:
+            raise RuntimeError(problem)
         turn_id = f"turn-{len(self.job.unity_turns) + 1:03d}-{uuid4().hex[:6]}"
         effective = self.build_effective_prompt(
             self.job,
