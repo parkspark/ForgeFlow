@@ -40,6 +40,10 @@ def config(tmp_path: Path, monkeypatch) -> AppConfig:
 
 @pytest.fixture
 def image(tmp_path: Path) -> Path:
+    from PySide6.QtGui import QImage
+
     path = tmp_path / "입력 이미지.PNG"
-    path.write_bytes(b"fake-png-content")
+    pixels = QImage(8, 8, QImage.Format.Format_RGBA8888)
+    pixels.fill(0xFF4A90E2)
+    assert pixels.save(str(path))
     return path

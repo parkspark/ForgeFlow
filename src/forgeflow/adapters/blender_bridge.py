@@ -60,7 +60,7 @@ async def propose(args: argparse.Namespace) -> int:
             )
             prompt = (
                 args.prompt + "\n중요: 이전 응답은 설명문으로 끝나 실행 계획이 생성되지 않았다. "
-                "변경 요청을 한국어로 설명만 하지 말고, 반드시 필요한 asset.* 도구를 "
+                "변경 요청을 한국어로 설명만 하지 말고, 필요한 허용된 쓰기 도구를 "
                 "Ollama tool_calls 형식으로 실제 호출 제안하라. 쓰기는 아직 실행되지 않고 승인 대기 계획으로만 저장된다."
             )
             result = await agent.run(prompt, approval_callback=lambda _plan: False)
@@ -149,7 +149,17 @@ async def inspect_asset(args: argparse.Namespace) -> int:
         result = await mcp.call_tool(
             "scene.inspect", {"input_path": str(args.input.resolve(strict=True))}
         )
-    payload = result.model_dump(mode="json")
+        payload = result.model_dump(mode="json")
+        if result.success and any(
+            item.get("type") == "ARMATURE" for item in result.data.get("objects", [])
+        ):
+            rig = await mcp.call_tool(
+                "rig.inspect", {"input_path": str(args.input.resolve(strict=True))}
+            )
+            if rig.success:
+                payload["data"]["rig"] = rig.data
+            else:
+                payload["data"]["rig_warning"] = rig.summary
     if args.output:
         atomic_json(args.output.resolve(), payload)
     emit("result", stage="inspect", payload=payload)

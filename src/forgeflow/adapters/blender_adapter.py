@@ -10,6 +10,8 @@ from forgeflow.domain.artifact import Artifact
 from forgeflow.domain.job import BlenderRequest, Job, utc_now
 from forgeflow.domain.process import ProcessCommand
 from forgeflow.services.job_service import JobService, sha256_file
+from forgeflow.services.lineage import is_rigged_input
+from forgeflow.services.path_utils import same_path
 
 
 def plan_hash(plan: dict[str, Any]) -> str:
@@ -53,6 +55,7 @@ class BlenderAdapter:
         if not request_text:
             raise ValueError("Blender 편집 요청을 입력해 주세요.")
         input_path = Path(job.blender_input_path or "").resolve(strict=True)
+        preserve_rig = is_rigged_input(job, input_path)
         version = self.jobs.next_blender_version(job)
         version_dir = self.jobs.job_directory(job.job_id) / "blender" / f"v{version:03d}"
         version_dir.mkdir(parents=True, exist_ok=False)
@@ -60,16 +63,24 @@ class BlenderAdapter:
         enriched = (
             f"input_path는 '{input_path}'이고 output_directory는 '{version_dir.resolve()}'이다. "
             "먼저 scene.inspect로 장면을 검사하고 실제 이름을 확인한 다음, 아래 요청에 필요한 허용된 작업만 계획해줘. "
-            "다른 입력·출력 경로를 사용하지 마. 수정 요청은 설명문으로 끝내지 말고 반드시 필요한 asset.* 도구를 "
+            "다른 입력·출력 경로를 사용하지 마. 수정 요청은 설명문으로 끝내지 말고 필요한 허용 도구를 "
             "Ollama tool_calls 형식으로 제안해 승인 대기 계획을 만들어라.\n사용자 요청: "
             + request_text
         )
+        if preserve_rig:
+            enriched += (
+                "\n리깅된 자산이다. rig.inspect로 본과 스킨을 먼저 확인하고 보존해라. "
+                "전체 캐릭터 변환은 root를 대상으로 하고, export_profile='preserve'를 사용해라. "
+                "다음 Unity 입력이 필요한 편집은 BLEND/GLB/FBX를 모두 출력해라."
+            )
         record = BlenderRequest(
             request=request_text,
             input_path=str(input_path),
             output_directory=str(version_dir.resolve()),
             version=version,
             proposal_path=str(proposal_path.resolve()),
+            preserve_rig=preserve_rig,
+            input_sha256=sha256_file(input_path),
         )
         command = self._base_command(
             job, ["propose", "--prompt", enriched, "--output", str(proposal_path)]
@@ -102,7 +113,16 @@ class BlenderAdapter:
         ):
             raise RuntimeError("승인할 실행 계획이 없습니다.")
         input_path = Path(request.input_path).resolve(strict=True)
+        if job.blender_input_path and not same_path(job.blender_input_path, input_path):
+            raise RuntimeError("Blender 입력이 변경되었습니다. 새 실행 계획을 만들어 주세요.")
         original_hash = sha256_file(input_path)
+        if request.input_sha256 and request.input_sha256 != original_hash:
+            raise RuntimeError(
+                "계획을 만든 뒤 Blender 입력 파일이 변경되었습니다. 새 계획을 만들어 주세요."
+            )
+        original = next((item for item in job.artifacts if same_path(item.path, input_path)), None)
+        if original and original.sha256 and original.sha256 != original_hash:
+            raise RuntimeError("등록된 Blender 입력의 SHA-256이 변경되었습니다.")
         output = Path(request.output_directory) / "execution.json"
         command = self._base_command(
             job,
@@ -136,12 +156,27 @@ class BlenderAdapter:
             raise RuntimeError(result.get("summary") or "Blender 편집이 실패했습니다.")
         paths = [Path(value).resolve(strict=True) for value in result.get("artifacts", [])]
         by_kind = {path.suffix.lower().lstrip("."): path for path in paths}
-        missing = sorted(self.REQUIRED - set(by_kind))
+        required = self.required_formats(request)
+        missing = sorted(required - set(by_kind))
         if missing:
             raise RuntimeError("Blender 결과 산출물이 없습니다: " + ", ".join(missing))
         version_root = Path(request.output_directory).resolve(strict=True)
         artifacts: list[Artifact] = []
-        for kind in sorted(self.REQUIRED):
+        data = result.get("data", {})
+        if not isinstance(data, dict):
+            raise RuntimeError("Blender 보존 검사 응답 형식이 올바르지 않습니다.")
+        preservation = data.get("preservation", {})
+        if isinstance(preservation, dict) and preservation.get("failures"):
+            raise RuntimeError("Blender 자산 보존 검사 실패: " + str(preservation["failures"]))
+        if request.preserve_rig and (
+            data.get("has_armature") is not True
+            or not isinstance(preservation, dict)
+            or preservation.get("status") != "passed"
+            or preservation.get("scope") != "native_scene"
+            or preservation.get("failures") != []
+        ):
+            raise RuntimeError("리깅 보존을 확인하지 못했습니다. Blender 검사 결과를 확인하세요.")
+        for kind in sorted(set(by_kind) & self.REQUIRED):
             path = by_kind[kind]
             if path.stat().st_size <= 0:
                 raise RuntimeError(f"0바이트 Blender 결과를 거부했습니다: {path}")
@@ -158,9 +193,84 @@ class BlenderAdapter:
                     parent_path=str(input_path),
                 )
             )
+        if data:
+            report = version_root / "blender_report.json"
+            report.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            artifacts.append(
+                Artifact(
+                    "blender_report",
+                    str(report),
+                    "blender",
+                    utc_now(),
+                    version=request.version,
+                    sha256=sha256_file(report),
+                    parent_path=str(input_path),
+                )
+            )
         request.status = "completed"
         request.session_path = result.get("log_path")
         return artifacts
+
+    @classmethod
+    def required_formats(cls, request: BlenderRequest) -> set[str]:
+        steps = (request.plan or {}).get("steps", [])
+        if steps and steps[-1].get("tool") == "asset.export":
+            formats = steps[-1].get("arguments", {}).get("formats", sorted(cls.REQUIRED))
+            if (
+                not isinstance(formats, list)
+                or not formats
+                or any(item not in cls.REQUIRED for item in formats)
+            ):
+                raise RuntimeError("승인 계획의 export 형식이 올바르지 않습니다.")
+            return set(formats)
+        return cls.REQUIRED
+
+    @staticmethod
+    def available_inputs(job: Job) -> list[tuple[str, str]]:
+        choices: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for item in reversed(job.artifacts):
+            path = Path(item.path)
+            if path.suffix.lower() not in {".blend", ".glb", ".fbx"} or not path.is_file():
+                continue
+            if item.stage == "rigging" and item.kind not in {
+                "humanoid_blend",
+                "humanoid_fbx",
+                "rigged_glb",
+            }:
+                continue
+            key = str(path.resolve()).casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            origin = {"modeling": "모델 원본", "blender": "Blender", "rigging": "리깅"}.get(
+                item.stage, item.stage
+            )
+            version = f" v{item.version:03d}" if item.version else ""
+            choices.append(
+                (
+                    str(path.resolve()),
+                    f"{origin}{version} · {path.suffix[1:].upper()} · {path.name}",
+                )
+            )
+        if job.blender_input_path and Path(job.blender_input_path).is_file():
+            path = str(Path(job.blender_input_path).resolve())
+            if path.casefold() not in seen:
+                choices.insert(0, (path, "현재 입력 · " + Path(path).name))
+        return choices
+
+    def select_input(self, job: Job, path: str) -> None:
+        if not any(same_path(path, candidate) for candidate, _label in self.available_inputs(job)):
+            raise ValueError("이 작업에 등록된 Blender 입력을 선택하세요.")
+        job.blender_input_path = str(Path(path).resolve(strict=True))
+        request = job.latest_blender_request
+        if (
+            request
+            and request.status == "awaiting_approval"
+            and not same_path(request.input_path, path)
+        ):
+            request.status = "cancelled"
+        self.jobs.save(job)
 
     def build_check(self, jobs_root: Path) -> ProcessCommand:
         session_dir = jobs_root.parent / "environment-sessions"

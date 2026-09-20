@@ -11,6 +11,7 @@ from forgeflow.adapters.rigging_adapter import RIGGING_KINDS, RiggingAdapter
 from forgeflow.domain.artifact import Artifact
 from forgeflow.domain.job import RiggingRequest, utc_now
 from forgeflow.services.job_service import JobService, sha256_file
+from tests.asset_fixtures import glb_bytes, png_bytes
 
 
 def make_adapter(config, image, *, jobs_root: Path | None = None):
@@ -23,7 +24,7 @@ def make_adapter(config, image, *, jobs_root: Path | None = None):
     jobs = JobService(config.jobs_root)
     job = jobs.create("rig-test", image)
     source = jobs.job_directory(job.job_id) / "modeling" / "source.glb"
-    source.write_bytes(b"original-glb")
+    source.write_bytes(glb_bytes("original-glb"))
     jobs.add_artifact(
         job, Artifact("glb", str(source), "modeling", utc_now(), sha256=sha256_file(source))
     )
@@ -33,7 +34,7 @@ def make_adapter(config, image, *, jobs_root: Path | None = None):
 def add_blender_glb(jobs, job, version: int, payload: bytes = b"edited") -> Path:
     path = jobs.job_directory(job.job_id) / "blender" / f"v{version:03d}" / "op" / "result.glb"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(payload)
+    path.write_bytes(glb_bytes(payload))
     jobs.add_artifact(
         job,
         Artifact("glb", str(path), "blender", utc_now(), version=version, sha256=sha256_file(path)),
@@ -64,7 +65,7 @@ def produce(run, *, omit: str | None = None, empty: str | None = None, **overrid
     return paths
 
 
-def test_schema_v1_migrates_to_v3_without_losing_fields(config, image):
+def test_schema_v1_migrates_to_v4_without_losing_fields(config, image):
     jobs = JobService(config.jobs_root)
     job = jobs.create("legacy", image)
     path = jobs.job_directory(job.job_id) / "job.json"
@@ -82,10 +83,10 @@ def test_schema_v1_migrates_to_v3_without_losing_fields(config, image):
     payload["stages"].pop("rigging", None)
     path.write_text(json.dumps(payload), encoding="utf-8")
     restored = jobs.load(job.job_id)
-    assert restored.schema_version == 3
+    assert restored.schema_version == 4
     assert restored.stages["rigging"].status == "pending"
     assert restored.generation_settings["legacy_value"] == "keep"
-    assert json.loads(path.read_text(encoding="utf-8"))["schema_version"] == 3
+    assert json.loads(path.read_text(encoding="utf-8"))["schema_version"] == 4
 
 
 def test_future_schema_is_rejected(config, image):
@@ -111,7 +112,7 @@ def test_default_input_prefers_latest_blender_then_modeling(config, image):
 def test_explicit_glb_must_belong_to_job(config, image, tmp_path):
     _config, _jobs, job, adapter, _source = make_adapter(config, image)
     external = tmp_path / "external.glb"
-    external.write_bytes(b"x")
+    external.write_bytes(glb_bytes())
     with pytest.raises(ValueError, match="등록된"):
         adapter.select_input(job, external)
 
@@ -161,7 +162,7 @@ def test_space_path_uses_safe_staging(config, image, tmp_path, monkeypatch):
     _config, jobs, job, adapter, _source = make_adapter(config, image)
     spaced = tmp_path / "input with spaces" / "person.glb"
     spaced.parent.mkdir()
-    spaced.write_bytes(b"space-input")
+    spaced.write_bytes(glb_bytes("space-input"))
     jobs.add_artifact(
         job,
         Artifact("glb", str(spaced), "blender", utc_now(), version=4, sha256=sha256_file(spaced)),
@@ -181,7 +182,7 @@ def test_space_in_staging_root_is_rejected(config, image, tmp_path, monkeypatch)
     _config, jobs, job, adapter, _source = make_adapter(config, image)
     spaced = tmp_path / "input with spaces" / "person.glb"
     spaced.parent.mkdir()
-    spaced.write_bytes(b"space-input")
+    spaced.write_bytes(glb_bytes("space-input"))
     jobs.add_artifact(
         job,
         Artifact("glb", str(spaced), "blender", utc_now(), version=1, sha256=sha256_file(spaced)),
@@ -285,7 +286,7 @@ def test_mock_unirig_full_adapter_pipeline(config, image):
     adapter.register_success(job, run, artifacts)
     for pose in (False, True):
         _preview_command, output, kind = adapter.build_preview(run, pose)
-        output.write_bytes(b"mock-png")
+        output.write_bytes(png_bytes())
         jobs.add_artifact(job, adapter.collect_preview(run, output, kind))
     jobs.set_stage(job, "rigging", "completed")
     restored = jobs.load(job.job_id)

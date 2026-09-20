@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 from pathlib import Path
@@ -8,6 +9,7 @@ from forgeflow.config import AppConfig
 from forgeflow.domain.artifact import Artifact
 from forgeflow.domain.job import Job, utc_now
 from forgeflow.domain.process import ProcessCommand
+from forgeflow.services.asset_validation import preview_signature, validate_image_content
 from forgeflow.services.job_service import JobService, sha256_file
 
 
@@ -17,6 +19,7 @@ class ModelingAdapter:
     def __init__(self, config: AppConfig, jobs: JobService):
         self.config = config
         self.jobs = jobs
+        self._preview_baselines: dict[Path, tuple[int, int] | None] = {}
 
     def build_release_ollama(self) -> list[ProcessCommand]:
         executable = shutil.which("ollama")
@@ -69,26 +72,57 @@ class ModelingAdapter:
             str(int(job.generation_settings.get("seed", 42))),
             "-ArtifactRoot",
             str(run_root.resolve()),
+            "-BlenderExecutable",
+            str(self.config.blender_executable),
         ]
         return ProcessCommand(
             self.config.powershell, arguments, self.config.modeling_root
         ), run_root
 
-    def collect_generation(self, job: Job, run_root: Path) -> list[Artifact]:
+    def collect_generation(
+        self, job: Job, run_root: Path, *, resume: bool = False
+    ) -> list[Artifact]:
         source_dir = run_root / "source"
         expected = {kind: source_dir / f"source.{kind}" for kind in self.REQUIRED}
         self.verify_artifacts(expected.values())
-        final_dir = self.jobs.job_directory(job.job_id) / "modeling"
+        directory = self.jobs.job_directory(job.job_id)
+        final_dir = directory / "modeling"
+        manifest = directory / ".runs" / "modeling-collection.json"
+        if not run_root.resolve().is_relative_to((directory / ".runs").resolve()):
+            raise RuntimeError("모델링 실행 결과가 작업 폴더를 벗어났습니다.")
+        hashes = {kind: sha256_file(source) for kind, source in expected.items()}
+        if resume:
+            recorded = json.loads(manifest.read_text(encoding="utf-8"))
+            if recorded.get("sha256") != hashes:
+                raise RuntimeError("수집 대기 중인 모델링 원본 SHA-256이 변경되었습니다.")
         for kind in self.REQUIRED:
             destination = final_dir / f"source.{kind}"
-            if destination.exists():
+            if not destination.resolve().is_relative_to(directory):
+                raise RuntimeError("모델링 원본 경로가 작업 폴더를 벗어났습니다.")
+            if destination.exists() and (not resume or sha256_file(destination) != hashes[kind]):
                 raise RuntimeError(f"기존 원본 산출물을 덮어쓸 수 없습니다: {destination}")
+        if not resume:
+            manifest.parent.mkdir(parents=True, exist_ok=True)
+            temporary_manifest = manifest.with_suffix(".tmp")
+            temporary_manifest.write_text(
+                json.dumps(
+                    {
+                        "run_root": str(run_root.resolve()),
+                        "sha256": hashes,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            os.replace(temporary_manifest, manifest)
         artifacts: list[Artifact] = []
         for kind, source in expected.items():
             destination = final_dir / f"source.{kind}"
             temporary = destination.with_suffix(destination.suffix + ".tmp")
-            shutil.copy2(source, temporary)
-            os.replace(temporary, destination)
+            if not destination.exists():
+                shutil.copy2(source, temporary)
+                if sha256_file(temporary) != hashes[kind]:
+                    raise RuntimeError("모델링 원본 수집 중 SHA-256이 변경되었습니다.")
+                os.replace(temporary, destination)
             artifacts.append(
                 Artifact(
                     kind,
@@ -109,6 +143,19 @@ class ModelingAdapter:
             for item in job.artifacts
             if item.stage == "modeling" and item.kind in self.REQUIRED
         ]
+        manifest = directory / ".runs" / "modeling-collection.json"
+        if len(originals) < len(self.REQUIRED) and manifest.is_file():
+            try:
+                record = json.loads(manifest.read_text(encoding="utf-8"))
+                recovered = self.collect_generation(job, Path(record["run_root"]), resume=True)
+            except (OSError, KeyError, ValueError) as exc:
+                raise RuntimeError(f"모델링 결과 수집을 재개할 수 없습니다: {exc}") from exc
+            self.jobs.add_artifacts(job, recovered)
+            originals = [
+                item
+                for item in job.artifacts
+                if item.stage == "modeling" and item.kind in self.REQUIRED
+            ]
         if not originals and not any(
             path.exists() or path.is_symlink() for path in expected.values()
         ):
@@ -136,6 +183,7 @@ class ModelingAdapter:
         directory = self.jobs.job_directory(job.job_id)
         input_glb = directory / "modeling" / "source.glb"
         output = directory / "modeling" / "preview.png"
+        self._preview_baselines[output] = preview_signature(output)
         script = self.config.modeling_root / "scripts" / "render_preview.py"
         command = ProcessCommand(
             str(self.config.blender_executable),
@@ -143,6 +191,8 @@ class ModelingAdapter:
                 "--background",
                 "--factory-startup",
                 "--disable-autoexec",
+                "--python-exit-code",
+                "1",
                 "--python",
                 str(script),
                 "--",
@@ -154,6 +204,13 @@ class ModelingAdapter:
             directory,
         )
         return command, output
+
+    def validate_preview(self, output: Path) -> None:
+        self.verify_artifacts([output])
+        previous = self._preview_baselines.get(output)
+        if previous is not None and previous == preview_signature(output):
+            raise RuntimeError("이번 실행에서 미리보기가 갱신되지 않았습니다.")
+        validate_image_content(output)
 
     @staticmethod
     def verify_artifacts(paths) -> None:

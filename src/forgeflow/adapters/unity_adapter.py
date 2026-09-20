@@ -18,6 +18,7 @@ from forgeflow.config import AppConfig
 from forgeflow.domain.job import Job, UnitySession, UnityTurn, utc_now
 from forgeflow.domain.process import ProcessCommand
 from forgeflow.services.job_service import JobService
+from forgeflow.services.lineage import invalidate_unity
 from forgeflow.services.path_utils import same_path
 from forgeflow.services.process_control import terminate_process_tree
 
@@ -137,6 +138,8 @@ class UnityAdapter(QObject):
         return root
 
     def import_humanoid_fbx(self, job: Job, project_path: str | Path) -> UnityImportResult:
+        if self._active_turn and self._active_turn.status == "running":
+            raise RuntimeError("Unity 실행이 끝난 뒤 새 FBX를 가져오세요.")
         project = self.validate_project(project_path)
         result = copy_humanoid_fbx(job, project)
         imports = self._unity_root(job) / "imports"
@@ -145,8 +148,12 @@ class UnityAdapter(QObject):
             json.dumps(asdict(result), ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
+        invalidate_unity(job, "새 FBX를 가져왔습니다. Avatar 준비와 새 결과 검토가 필요합니다.")
         job.unity_project_path = str(project)
         job.unity_asset_path = result.asset_path
+        job.unity_import_source_path = result.source_path
+        job.unity_import_source_sha256 = result.source_sha256
+        job.unity_import_project_path = str(project)
         self.jobs.save(job)
         self.job_changed.emit(job)
         return result
@@ -196,6 +203,8 @@ class UnityAdapter(QObject):
             model=self.config.unity_agent_model,
             status="starting",
         )
+        if job.unity_project_path and not same_path(job.unity_project_path, project):
+            invalidate_unity(job, "Unity 프로젝트가 바뀌었습니다. 이 프로젝트로 FBX를 가져오세요.")
         job.unity_project_path = str(project)
         self.jobs.add_unity_session(job, self.session)
         creationflags = 0
@@ -363,7 +372,7 @@ class UnityAdapter(QObject):
                             pass
                     if path not in turn.screenshot_paths:
                         turn.screenshot_paths.append(path)
-                    if self.job:
+                    if self.job and turn.lineage_revision == self.job.lineage_revision:
                         self.job.latest_unity_screenshot_path = path
                     self._save_job()
             elif event_type == "turn_completed":
@@ -438,6 +447,7 @@ class UnityAdapter(QObject):
             repair_existing=repair_existing,
             status="running",
             started_at=utc_now(),
+            lineage_revision=self.job.lineage_revision,
         )
         turn_dir = self._session_dir / "turns" / turn_id
         turn_dir.mkdir(parents=True, exist_ok=False)
@@ -509,7 +519,8 @@ class UnityAdapter(QObject):
         turn.skipped_checks = parsed.get("skipped_checks", [])
         turn.unmapped_requirements = parsed.get("unmapped_requirements", [])
         turn.changed_assets = self.collect_changed_assets(turn.jsonl_log_path)
-        if self.job:
+        current = bool(self.job and turn.lineage_revision == self.job.lineage_revision)
+        if current:
             scenes = [path for path in turn.changed_assets if path.lower().endswith(".unity")]
             if scenes:
                 self.job.latest_unity_scene_path = scenes[-1]
@@ -528,7 +539,8 @@ class UnityAdapter(QObject):
             (turn_dir / "receipt-path.json").write_text(
                 json.dumps(pointer, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
             )
-        if self.job:
+        self._active_turn = None
+        if current:
             self.jobs.set_stage(
                 self.job,
                 "unity",
@@ -537,7 +549,9 @@ class UnityAdapter(QObject):
                 log_path=Path(turn.run_log_path) if turn.run_log_path else None,
             )
             self.job_changed.emit(self.job)
-        self._active_turn = None
+        elif self.job:
+            self.jobs.save(self.job)
+            self.job_changed.emit(self.job)
 
     def review_turn(self, turn_id: str, accepted: bool, note: str = "") -> UnityTurn:
         if self.job is None:
@@ -580,6 +594,8 @@ class UnityAdapter(QObject):
         )
         if source is None:
             raise ValueError("수정할 Unity 실행을 찾을 수 없습니다.")
+        if source.lineage_revision != self.job.lineage_revision:
+            raise ValueError("이전 입력 버전의 실행은 수정할 수 없습니다. 새 요청을 작성하세요.")
         if not feedback.strip():
             raise ValueError("수정 피드백을 입력하세요.")
         return self.send_prompt(
@@ -680,14 +696,17 @@ class UnityAdapter(QObject):
         turn = self._active_turn
         if turn is None:
             return
+        self._active_turn = None
         if turn.status == "running":
             turn.status = status
             turn.completed_at = utc_now()
             turn.error = message
             if self.job:
-                self.jobs.set_stage(self.job, "unity", status, error=message)
+                if turn.lineage_revision == self.job.lineage_revision:
+                    self.jobs.set_stage(self.job, "unity", status, error=message)
+                else:
+                    self.jobs.save(self.job)
                 self.job_changed.emit(self.job)
-        self._active_turn = None
 
     def _fail_session(self, message: str) -> None:
         if self.session:

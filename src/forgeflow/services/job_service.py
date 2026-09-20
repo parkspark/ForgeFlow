@@ -20,6 +20,7 @@ from forgeflow.domain.job import (
     UnityTurn,
     utc_now,
 )
+from forgeflow.services.asset_validation import validate_image_content
 
 ALLOWED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg"}
 
@@ -47,6 +48,7 @@ class JobService:
             raise ValueError("PNG, JPG, JPEG 이미지만 사용할 수 있습니다.")
         if source.stat().st_size <= 0:
             raise ValueError("입력 이미지가 비어 있습니다.")
+        validate_image_content(source)
         return source
 
     def job_directory(self, job_id: str) -> Path:
@@ -178,6 +180,8 @@ class JobService:
             raise ValueError("잘못된 단계 또는 상태입니다.")
         stage = job.stages[stage_name]
         stage.status = status
+        if status != "stale":
+            stage.stale_reason = None
         if status == "running":
             stage.started_at = utc_now()
             stage.completed_at = None
@@ -254,6 +258,10 @@ class JobService:
         turn = next((item for item in job.unity_turns if item.turn_id == turn_id), None)
         if turn is None:
             raise ValueError("검토할 Unity 실행을 찾을 수 없습니다.")
+        if turn != job.latest_unity_turn or turn.lineage_revision != job.lineage_revision:
+            raise ValueError("이전 입력 버전의 실행입니다. 최신 결과를 가져온 뒤 다시 검토하세요.")
+        if turn.status != "succeeded":
+            raise ValueError("성공한 Unity 실행만 검토할 수 있습니다.")
         turn.human_review_status = status
         turn.human_review_note = note.strip()
         turn.human_reviewed_at = utc_now()

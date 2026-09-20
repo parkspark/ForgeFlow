@@ -8,6 +8,7 @@ import pytest
 from forgeflow.adapters.modeling_adapter import ModelingAdapter
 from forgeflow.services.job_service import JobService, sha256_file
 from forgeflow.services.pipeline_service import PipelineService
+from tests.asset_fixtures import png_bytes
 
 
 @pytest.fixture
@@ -80,8 +81,8 @@ def test_modeling_retry_resumes_only_preview_after_reload(
     assert started[0][1] == "modeling_preview"
     assert job.stages["modeling"].status == "running"
     assert job.stages["modeling"].attempts == 2
-    assert len(list((jobs.job_directory(job.job_id) / ".runs").iterdir())) == 1
-    preview.write_bytes(b"rendered-preview")
+    assert len([p for p in (jobs.job_directory(job.job_id) / ".runs").iterdir() if p.is_dir()]) == 1
+    preview.write_bytes(png_bytes())
     started[0][-1](0)
     restored = jobs.load(job.job_id)
     assert restored.stages["modeling"].status == "completed"
@@ -107,6 +108,8 @@ def test_modeling_retry_resumes_only_preview_after_reload(
 )
 def test_unverified_originals_never_resume_or_regenerate(generated_model, monkeypatch, damage):
     jobs, job, adapter = generated_model
+    # Legacy outputs without a transaction receipt must still fail closed.
+    (jobs.job_directory(job.job_id) / ".runs" / "modeling-collection.json").unlink()
     jobs.set_stage(job, "modeling", "failed", error="preview failed")
     artifact = job.artifacts[-1]
     path = Path(artifact.path)

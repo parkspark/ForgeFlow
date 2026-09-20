@@ -191,8 +191,16 @@ class MainWindow(QMainWindow):
                 self.modeling_panel,
                 [("blender", "Blender에서 편집"), ("rigging", "바로 리깅으로 이동")],
             ),
-            ("blender", self.blender_panel, [("rigging", "리깅으로 이동")]),
-            ("rigging", self.rigging_panel, [("unity", "Unity에서 사용")]),
+            (
+                "blender",
+                self.blender_panel,
+                [("rigging", "리깅으로 이동"), ("unity", "Unity에서 사용")],
+            ),
+            (
+                "rigging",
+                self.rigging_panel,
+                [("blender", "리깅 결과 편집"), ("unity", "Unity에서 사용")],
+            ),
         ):
             card = NextStepPanel(actions)
             panel.layout().addWidget(card)
@@ -309,6 +317,7 @@ class MainWindow(QMainWindow):
         self.blender_panel.approve_requested.connect(self.approve_blender)
         self.blender_panel.deny_requested.connect(self.deny_blender)
         self.blender_panel.open_file_requested.connect(self.open_path)
+        self.blender_panel.input_selected.connect(self.select_blender_input)
         self.rigging_panel.run_requested.connect(self.start_rigging)
         self.rigging_panel.open_file_requested.connect(self.open_path)
         self.rigging_panel.open_folder_requested.connect(self.open_path)
@@ -474,7 +483,7 @@ class MainWindow(QMainWindow):
             path = Path(value) if value else None
             return bool(
                 path
-                and path.suffix.lower() == suffix
+                and path.suffix.lower() in ((suffix,) if isinstance(suffix, str) else suffix)
                 and path.is_file()
                 and path.stat().st_size > 0
             )
@@ -494,8 +503,8 @@ class MainWindow(QMainWindow):
             }
         return {
             "blender": (
-                self._usable_result(job.blender_input_path, ".glb"),
-                "모델 생성 후 사용할 GLB 파일이 필요합니다.",
+                self._usable_result(job.blender_input_path, (".glb", ".blend", ".fbx")),
+                "등록된 모델 또는 리깅 결과가 필요합니다.",
             ),
             "rigging": (
                 any(
@@ -514,8 +523,8 @@ class MainWindow(QMainWindow):
         states = self._next_step_availability()
         instructions = {
             "modeling": "GLB 결과를 Blender에서 편집하세요. 편집이 필요 없으면 사람형 모델을 바로 리깅할 수 있습니다.",
-            "blender": "리깅 화면에서 사용할 GLB 버전과 사람형 여부를 확인한 뒤 실행하세요.",
-            "rigging": "Unity 화면에서 프로젝트를 선택·연결한 뒤 ‘Unity 프로젝트로 가져오기’로 결과를 가져오세요.",
+            "blender": "메시 편집 결과는 리깅으로, 리깅 후 편집한 FBX는 Unity로 이어갈 수 있습니다.",
+            "rigging": "리깅된 BLEND를 편집하거나 Unity로 가져온 뒤 Avatar 준비를 확인하세요.",
         }
         for source, card in self.next_steps.items():
             selected = {key: states[key] for key in card.buttons}
@@ -708,14 +717,27 @@ class MainWindow(QMainWindow):
     def propose_blender(self, request: str) -> None:
         if not self.current_job or self.pipeline.busy:
             return
+        if self._gpu_blocked_by_unity():
+            return
         try:
             self.pipeline.start_proposal(self.current_job, request)
             self._render_job()
         except Exception as exc:
             QMessageBox.critical(self, "계획 생성 실패", str(exc))
 
+    def select_blender_input(self, path: str) -> None:
+        if not self.current_job or self.pipeline.busy or self.unity.busy:
+            return
+        try:
+            self.pipeline.blender.select_input(self.current_job, path)
+            self._render_job()
+        except Exception as exc:
+            QMessageBox.critical(self, "입력 선택 실패", str(exc))
+
     def approve_blender(self) -> None:
         if not self.current_job or self.pipeline.busy:
+            return
+        if self._gpu_blocked_by_unity():
             return
         try:
             self.pipeline.approve(self.current_job)

@@ -19,6 +19,7 @@ STATUS_LABELS = {
     "unavailable": "검증 정보 없음",
     "partial": "일부 검증",
     "skipped": "건너뜀",
+    "stale": "새 결과 연결 필요",
 }
 
 
@@ -34,7 +35,7 @@ def set_status_badge(label: QLabel, title: str, status: str) -> None:
         tone = "error"
     elif status in {"running", "planning"}:
         tone = "active"
-    elif status in {"awaiting_review", "awaiting_approval", "partial"}:
+    elif status in {"awaiting_review", "awaiting_approval", "partial", "stale"}:
         tone = "warning"
     label.setTextFormat(Qt.TextFormat.PlainText)
     label.setMinimumHeight(28)

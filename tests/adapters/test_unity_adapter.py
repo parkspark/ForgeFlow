@@ -55,7 +55,7 @@ def _adapter(config, image, unity_project):
     return jobs, job, adapter
 
 
-def test_schema_v2_migrates_to_v3_with_unity_stage(config, image):
+def test_schema_v2_migrates_to_v4_with_unity_stage(config, image):
     jobs = JobService(config.jobs_root)
     job = jobs.create("old", image)
     path = jobs.job_directory(job.job_id) / "job.json"
@@ -73,7 +73,7 @@ def test_schema_v2_migrates_to_v3_with_unity_stage(config, image):
         payload.pop(key, None)
     path.write_text(json.dumps(payload), encoding="utf-8")
     restored = jobs.load(job.job_id)
-    assert restored.schema_version == 3
+    assert restored.schema_version == 4
     assert restored.stages["unity"].status == "pending"
     assert restored.unity_sessions == []
     assert restored.unity_turns == []
@@ -85,6 +85,22 @@ def test_unity_project_validation(unity_project, tmp_path):
     bad.mkdir()
     with pytest.raises(ValueError, match="Assets"):
         UnityAdapter.validate_project(bad)
+
+
+def test_old_turn_transport_failure_preserves_current_lineage(config, image, unity_project):
+    jobs, job, adapter = _adapter(config, image, unity_project)
+    turn = UnityTurn("old-turn", "session-test", "old", "old", status="running")
+    job.unity_turns.append(turn)
+    adapter._active_turn = turn
+    job.lineage_revision = 1
+    job.stages["unity"].status = "stale"
+    observed_busy = []
+    adapter.job_changed.connect(lambda _: observed_busy.append(adapter.busy))
+    adapter._end_active_turn("failed", "old connection closed")
+    restored = jobs.load(job.job_id)
+    assert restored.stages["unity"].status == "stale"
+    assert restored.unity_turns[-1].status == "failed"
+    assert observed_busy == [False]
 
 
 def test_command_passes_explicit_project_and_isolated_environment(config, unity_project, tmp_path):
@@ -445,6 +461,10 @@ def test_selected_fbx_prompt_requires_exact_version_and_job_output_scope(
 ):
     _jobs, job, adapter = _adapter(config, image, unity_project)
     job.unity_asset_path = f"Assets/ForgeFlow/{job.job_id}/Models/v004/Character_humanoid.fbx"
+    imported = unity_project / job.unity_asset_path
+    imported.parent.mkdir(parents=True)
+    imported.write_bytes(b"fixture-fbx")
+    job.unity_input_path = str(imported)
     prompt = adapter.build_effective_prompt(
         job, unity_project, "이 캐릭터를 배치해줘", include_asset=True
     )
@@ -456,6 +476,10 @@ def test_selected_fbx_prompt_requires_exact_version_and_job_output_scope(
 def test_selected_fbx_is_structured_jsonl_policy_context(config, image, unity_project):
     _jobs, job, adapter = _adapter(config, image, unity_project)
     job.unity_asset_path = "Assets/ForgeFlow/job/Models/v005/Character.fbx"
+    imported = unity_project / job.unity_asset_path
+    imported.parent.mkdir(parents=True)
+    imported.write_bytes(b"fixture-fbx")
+    job.unity_input_path = str(imported)
     adapter.send_prompt("새 테스트 씬을 만들어줘", include_asset=True)
     message = json.loads(adapter.process.stdin.getvalue())
     assert message["selected_asset_paths"] == [job.unity_asset_path]

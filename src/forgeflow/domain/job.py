@@ -6,9 +6,9 @@ from typing import Any
 
 from .artifact import Artifact
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 STAGES = ("modeling", "blender", "rigging", "unity")
-STATUSES = {"pending", "running", "awaiting_review", "completed", "failed", "cancelled"}
+STATUSES = {"pending", "running", "awaiting_review", "completed", "failed", "cancelled", "stale"}
 
 
 def utc_now() -> str:
@@ -23,6 +23,7 @@ class StageState:
     attempts: int = 0
     error: str | None = None
     log_path: str | None = None
+    stale_reason: str | None = None
 
 
 @dataclass
@@ -38,6 +39,8 @@ class BlenderRequest:
     session_path: str | None = None
     approved_at: str | None = None
     created_at: str = field(default_factory=utc_now)
+    preserve_rig: bool = False
+    input_sha256: str | None = None
 
 
 @dataclass
@@ -95,6 +98,7 @@ class UnityTurn:
     human_reviewed_at: str | None = None
     error: str | None = None
     created_at: str = field(default_factory=utc_now)
+    lineage_revision: int = 0
 
 
 @dataclass
@@ -121,6 +125,10 @@ class Job:
     unity_input_path: str | None = None
     unity_project_path: str | None = None
     unity_asset_path: str | None = None
+    unity_import_source_path: str | None = None
+    unity_import_source_sha256: str | None = None
+    unity_import_project_path: str | None = None
+    lineage_revision: int = 0
     unity_sessions: list[UnitySession] = field(default_factory=list)
     unity_turns: list[UnityTurn] = field(default_factory=list)
     latest_unity_scene_path: str | None = None
@@ -168,6 +176,10 @@ class Job:
             unity_input_path=value.get("unity_input_path"),
             unity_project_path=value.get("unity_project_path"),
             unity_asset_path=value.get("unity_asset_path"),
+            unity_import_source_path=value.get("unity_import_source_path"),
+            unity_import_source_sha256=value.get("unity_import_source_sha256"),
+            unity_import_project_path=value.get("unity_import_project_path"),
+            lineage_revision=int(value.get("lineage_revision", 0)),
             unity_sessions=unity_sessions,
             unity_turns=unity_turns,
             latest_unity_scene_path=value.get("latest_unity_scene_path"),

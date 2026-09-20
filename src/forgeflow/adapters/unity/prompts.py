@@ -6,18 +6,31 @@ import json
 from pathlib import Path
 
 from forgeflow.domain.job import Job
+from forgeflow.services.path_utils import same_path
 
-from .project import safe_job_id
+from .project import safe_job_id, validate_import_selection
 
 
 def rig_status(job: Job) -> str:
-    request = job.latest_rigging_request
-    if request and request.report_path:
+    lineage: list[str] = []
+    current = job.unity_input_path
+    while current and current not in lineage:
+        lineage.append(current)
+        artifact = next((item for item in job.artifacts if same_path(item.path, current)), None)
+        current = artifact.parent_path if artifact else None
+    for request in reversed(job.rigging_requests):
+        if not request.report_path:
+            continue
         try:
             payload = json.loads(Path(request.report_path).read_text(encoding="utf-8"))
-            return str(payload.get("status") or "unknown")
+            if any(
+                same_path(str(payload.get(key) or ""), path)
+                for key in ("fbx", "blend")
+                for path in lineage
+            ):
+                return str(payload.get("status") or "unknown")
         except (OSError, json.JSONDecodeError):
-            pass
+            continue
     return "unknown"
 
 
@@ -33,12 +46,17 @@ def build_effective_prompt(
     """Build a prompt using an already validated project path."""
     assets = "(none selected)"
     if include_asset:
-        if not job.unity_asset_path:
-            raise ValueError("컨텍스트에 포함할 Unity Asset이 아직 없습니다.")
+        validate_import_selection(job, project)
         assets = (
             f"- Selected Humanoid FBX (exact required path): {job.unity_asset_path}\n"
             f"- Rig report: {rig_status(job)}\n"
             "- Use this exact selected FBX. Do not search for or substitute another version."
+            "\n- The FBX filename and rig report do not establish Unity Avatar readiness. "
+            "For Humanoid animation, use unity_configure_humanoid and read back "
+            "humanoidReady, avatar.isValid and avatar.isHuman before connecting animation. "
+            "Report failed mapping explicitly instead of claiming the character is ready. "
+            "Use dedicated animation tools to enumerate stable clip identities, save the "
+            "controller and inspect playback; static screenshots alone do not verify animation."
             "\n- Place the FBX in EDIT mode with unity_instantiate_prefab when available. "
             "Use its returned renderer bounds to center the whole character with margins, "
             "filling about 60–75% of the image height, then save the scene. "

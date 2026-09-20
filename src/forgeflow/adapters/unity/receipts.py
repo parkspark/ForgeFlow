@@ -28,11 +28,13 @@ def parse_receipt(path: str | Path | None) -> dict[str, Any]:
     skipped = _receipt_lists(payload, "skipped_checks")
     unmapped = _receipt_lists(payload, "unmapped_requirements")
     status = str(payload.get("status") or "").lower()
-    if status == "failed":
+    measured_keys = {json.dumps(item, sort_keys=True) for item in measured}
+    missing = [item for item in requested if json.dumps(item, sort_keys=True) not in measured_keys]
+    if status == "failed" or payload.get("failures"):
         automated = "failed"
     elif not requested and not measured:
         automated = "unavailable"
-    elif not requested or not measured or skipped or unmapped:
+    elif not requested or not measured or missing or skipped or unmapped:
         automated = "partial"
     elif status == "verified":
         automated = "verified"
@@ -44,6 +46,7 @@ def parse_receipt(path: str | Path | None) -> dict[str, Any]:
         "measured_checks": measured,
         "skipped_checks": skipped,
         "unmapped_requirements": unmapped,
+        "missing_checks": missing,
         "receipt": payload,
     }
 
@@ -68,6 +71,9 @@ def collect_changed_assets(jsonl_path: str | Path | None) -> list[str]:
         "unity_delete_script": {"deleted": ".cs"},
         "unity_install_level_loader": {"written": ".cs"},
         "unity_write_level": {"written": ".json"},
+        "unity_configure_humanoid": {},
+        "unity_create_animator_controller": {},
+        "unity_create_animation_clip": {},
     }
     found: list[str] = []
     seen: set[str] = set()
@@ -123,6 +129,22 @@ def collect_changed_assets(jsonl_path: str | Path | None) -> list[str]:
                     continue
                 for field, suffix in fields.items():
                     add_path(payload.get(field), suffix)
+                if event.get("name") in {
+                    "unity_configure_humanoid",
+                    "unity_create_animator_controller",
+                    "unity_create_animation_clip",
+                }:
+                    manifest = payload.get("changedAssets", [])
+                    if isinstance(manifest, list):
+                        for value in manifest:
+                            for suffix in (
+                                ".anim",
+                                ".controller",
+                                ".overridecontroller",
+                                ".meta",
+                                ".unity",
+                            ):
+                                add_path(value, suffix)
     except OSError:
         return []
     return found

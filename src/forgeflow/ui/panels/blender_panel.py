@@ -6,6 +6,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
+    QComboBox,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -16,6 +17,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from forgeflow.adapters.blender_adapter import BlenderAdapter
+from forgeflow.services.lineage import is_rigged_input
+
 from ..status import status_text
 
 
@@ -25,6 +29,7 @@ class BlenderPanel(QWidget):
     approve_requested = Signal()
     deny_requested = Signal()
     open_file_requested = Signal(str)
+    input_selected = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -34,13 +39,26 @@ class BlenderPanel(QWidget):
         layout = QVBoxLayout(self)
         supported = QLabel(
             "지원: 장면/재질 검사, 재질 속성, 위치·회전·크기, Bevel, Decimate, Smooth shading, GLB/BLEND/FBX 내보내기\n"
-            "미지원: 자유 메시 모델링, 임의 Blender Python, UV 편집, 리토폴로지, 리깅"
+            "리깅 결과는 BLEND를 선택해 본·스킨 검사와 자세 편집을 이어갈 수 있습니다."
         )
         supported.setWordWrap(True)
         layout.addWidget(supported)
         self.input_label = QLabel("Blender 입력: 없음")
         self.input_label.setWordWrap(True)
         layout.addWidget(self.input_label)
+        self.inputs = QComboBox()
+        self.inputs.setAccessibleName("Blender 입력 버전 선택")
+        self.inputs.setMinimumContentsLength(20)
+        self.inputs.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        )
+        self.inputs.activated.connect(
+            lambda _index: self.input_selected.emit(str(self.inputs.currentData()))
+        )
+        layout.addWidget(self.inputs)
+        self.mode_label = QLabel()
+        self.mode_label.setWordWrap(True)
+        layout.addWidget(self.mode_label)
         inspect_row = QHBoxLayout()
         self.inspect = QPushButton("장면 검사")
         self.inspect.clicked.connect(self.inspect_requested)
@@ -90,7 +108,11 @@ class BlenderPanel(QWidget):
         return str(job_id), os.path.normcase(os.path.normpath(input_path)) if input_path else ""
 
     def set_inspection(
-        self, payload: dict, *, job_id: str | None = None, input_path: str | None = None,
+        self,
+        payload: dict,
+        *,
+        job_id: str | None = None,
+        input_path: str | None = None,
     ) -> None:
         context = self._key(job_id, input_path) if job_id is not None else self._context
         if context is None:
@@ -104,6 +126,13 @@ class BlenderPanel(QWidget):
         materials = data.get("materials", [])
         if materials:
             lines.append("재질: " + ", ".join(item.get("name", "") for item in materials))
+        rig = data.get("rig")
+        if isinstance(rig, dict):
+            lines.append(
+                "\n본·스킨·애니메이션 검사:\n" + json.dumps(rig, ensure_ascii=False, indent=2)
+            )
+        if data.get("rig_warning"):
+            lines.append("리깅 검사 경고: " + str(data["rig_warning"]))
         text = "\n".join(lines)
         self._inspections[context] = text
         if context == self._context:
@@ -118,13 +147,28 @@ class BlenderPanel(QWidget):
             self.request.setPlainText(self._drafts.get(context, ""))
             self.scene.setPlainText(self._inspections.get(context, ""))
         self.input_label.setText("Blender 입력: " + (job.blender_input_path or "없음"))
+        self.inputs.blockSignals(True)
+        self.inputs.clear()
+        for path, label in BlenderAdapter.available_inputs(job):
+            self.inputs.addItem(label, path)
+            self.inputs.setItemData(self.inputs.count() - 1, path, 3)
+            if self._key(job.job_id, path) == context:
+                self.inputs.setCurrentIndex(self.inputs.count() - 1)
+        self.inputs.blockSignals(False)
+        self.inputs.setEnabled(not busy)
+        rigged = bool(job.blender_input_path and is_rigged_input(job, job.blender_input_path))
+        self.mode_label.setText(
+            "리깅 후 편집 · 본과 스킨을 보존합니다. 완료한 FBX를 Unity로 다시 가져오세요."
+            if rigged
+            else "메시 편집 · 결과 변경 후 새 버전으로 리깅하세요."
+        )
         request = job.latest_blender_request
         awaiting = bool(request and request.status == "awaiting_approval")
-        matching_input = bool(
-            request and self._key(job.job_id, request.input_path) == context
-        )
+        matching_input = bool(request and self._key(job.job_id, request.input_path) == context)
         if awaiting and not matching_input:
-            self.plan.setPlainText("입력이 변경되었습니다. 기존 계획을 취소한 뒤 새 입력으로 계획을 만들어 주세요.")
+            self.plan.setPlainText(
+                "입력이 변경되었습니다. 기존 계획을 취소한 뒤 새 입력으로 계획을 만들어 주세요."
+            )
         elif awaiting and request.plan:
             lines = []
             for step in request.plan.get("steps", []):

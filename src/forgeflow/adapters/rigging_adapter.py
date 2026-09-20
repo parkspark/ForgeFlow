@@ -12,7 +12,13 @@ from forgeflow.config import AppConfig
 from forgeflow.domain.artifact import Artifact
 from forgeflow.domain.job import Job, RiggingRequest, utc_now
 from forgeflow.domain.process import ProcessCommand
+from forgeflow.services.asset_validation import (
+    preview_signature,
+    validate_glb,
+    validate_image_content,
+)
 from forgeflow.services.job_service import JobService, sha256_file
+from forgeflow.services.lineage import invalidate_unity
 from forgeflow.services.path_utils import same_path
 
 from .modeling_adapter import ModelingAdapter
@@ -54,6 +60,7 @@ class RiggingAdapter:
     def __init__(self, config: AppConfig, jobs: JobService):
         self.config = config
         self.jobs = jobs
+        self._preview_baselines: dict[Path, tuple[int, int] | None] = {}
 
     @staticmethod
     def validate_seed(seed: int | str) -> int:
@@ -83,6 +90,7 @@ class RiggingAdapter:
             raise ValueError("리깅 입력은 GLB만 허용합니다.")
         if source.stat().st_size <= 0:
             raise ValueError(f"리깅 입력 GLB가 비어 있습니다: {source}")
+        validate_glb(source)
         return source
 
     def available_inputs(self, job: Job) -> list[RiggingInput]:
@@ -194,6 +202,8 @@ class RiggingAdapter:
             str(execution_directory.resolve()),
             "-Seed",
             str(seed_value),
+            "-BlenderExecutable",
+            str(self.config.blender_executable),
         ]
         command = ProcessCommand(self.config.powershell, arguments, self.config.modeling_root)
         return command, RiggingRun(
@@ -244,6 +254,14 @@ class RiggingAdapter:
             or not 1 <= influences <= 4
         ):
             failures.append(f"max_influences={influences!r} (허용 1~4)")
+        if report.get("schema_version", 1) >= 2:
+            if report.get("validation_errors") != []:
+                failures.append("모든 메시 검증 오류: " + str(report.get("validation_errors")))
+            meshes = report.get("mesh_reports")
+            if not isinstance(meshes, list) or not meshes:
+                failures.append("mesh_reports가 없습니다")
+            elif any(not isinstance(mesh, dict) or mesh.get("errors") != [] for mesh in meshes):
+                failures.append("메시별 스킨 검증이 완료되지 않았습니다")
         for key, kind in (("fbx", "humanoid_fbx"), ("blend", "humanoid_blend")):
             value = report.get(key)
             if not isinstance(value, str) or not same_path(value, expected[kind]):
@@ -310,10 +328,13 @@ class RiggingAdapter:
         blend = self.expected_paths(run.final_directory, run.request.safe_name)["humanoid_blend"]
         kind = "pose_preview" if pose else "rest_preview"
         output = run.final_directory / ("pose_preview.png" if pose else "rest_preview.png")
+        self._preview_baselines[output] = preview_signature(output)
         arguments = [
             "--background",
             "--factory-startup",
             "--disable-autoexec",
+            "--python-exit-code",
+            "1",
             "--python",
             str(script),
             "--",
@@ -332,6 +353,10 @@ class RiggingAdapter:
 
     def collect_preview(self, run: RiggingRun, output: Path, kind: str) -> Artifact:
         ModelingAdapter.verify_artifacts([output])
+        previous = self._preview_baselines.get(output)
+        if previous is not None and previous == preview_signature(output):
+            raise RuntimeError("이번 실행에서 리깅 미리보기가 갱신되지 않았습니다.")
+        validate_image_content(output)
         return Artifact(
             kind,
             str(output.resolve()),
@@ -353,9 +378,11 @@ class RiggingAdapter:
             raise RuntimeError("등록할 리깅 산출물이 부족합니다: " + ", ".join(sorted(missing)))
         self.jobs.add_artifacts(job, artifacts, save=False)
         paths = self.expected_paths(run.final_directory, run.request.safe_name)
+        invalidate_unity(job, "새 리깅 결과가 있습니다. Unity 프로젝트로 다시 가져오세요.")
         job.rigging_input_path = str(run.input_path)
         job.humanoid_fbx_path = str(paths["humanoid_fbx"].resolve())
         job.humanoid_blend_path = str(paths["humanoid_blend"].resolve())
         job.unity_input_path = job.humanoid_fbx_path
+        job.blender_input_path = job.humanoid_blend_path
         if save:
             self.jobs.save(job)

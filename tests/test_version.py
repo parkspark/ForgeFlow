@@ -10,7 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_runtime_version_is_current_release():
-    assert __version__ == "0.1.4"
+    assert __version__ == "0.2.0"
 
 
 def test_project_metadata_uses_runtime_version_as_single_source():

@@ -86,6 +86,10 @@ class RiggingPanel(QWidget):
         layout.addWidget(self.status)
         layout.addWidget(self.phase_status)
         layout.addWidget(self.unity_path)
+        self.quality_summary = QLabel("품질 보고: 리깅 결과 생성 후 확인할 수 있습니다.")
+        self.quality_summary.setWordWrap(True)
+        self.quality_summary.setTextFormat(Qt.TextFormat.PlainText)
+        layout.addWidget(self.quality_summary)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         summary_box = QGroupBox("리그 구조 요약")
@@ -93,7 +97,7 @@ class RiggingPanel(QWidget):
         self.summary_values: dict[str, QLabel] = {}
         for key, label in (
             ("bone_count", "골격 수"),
-            ("vertex_count", "전체 정점 수"),
+            ("vertex_count", "스킨 정점 수"),
             ("weighted_vertices", "웨이트 정점 수"),
             ("max_influences", "최대 영향 본 수"),
             ("missing_required_bones", "누락 필수 본"),
@@ -164,8 +168,10 @@ class RiggingPanel(QWidget):
         request = job.latest_rigging_request
         input_path = request.input_path if request else (job.rigging_input_path or "")
         return (
-            job.job_id, os.path.normcase(os.path.normpath(input_path)) if input_path else "",
-            request.version if request else None, request.created_at if request else None,
+            job.job_id,
+            os.path.normcase(os.path.normpath(input_path)) if input_path else "",
+            request.version if request else None,
+            request.created_at if request else None,
         )
 
     def append_log(self, line: str, *, job=None) -> None:
@@ -219,7 +225,9 @@ class RiggingPanel(QWidget):
 
         state = job.stages["rigging"]
         request = job.latest_rigging_request
-        detail = f" · {state.error}" if state.error else ""
+        detail = (
+            f" · {state.error or state.stale_reason}" if (state.error or state.stale_reason) else ""
+        )
         if request and request.preview_warning:
             detail += f" · 미리보기 경고: {request.preview_warning}"
         self.status.setText(f"리깅: {status_text(state.status)}{detail}")
@@ -245,6 +253,26 @@ class RiggingPanel(QWidget):
                 report = json.loads(Path(request.report_path).read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 report = None
+        quality = (report or {}).get("quality", {})
+        warnings = (report or {}).get("warnings", [])
+        if quality:
+            triangles = quality.get("triangle_count")
+            triangle_text = f"{triangles:,}" if isinstance(triangles, int) else "-"
+            self.quality_summary.setText(
+                f"품질 보고 · 메시 {quality.get('mesh_count', '-')}개 · 삼각형 {triangle_text}개"
+                f" · 재질 {quality.get('material_count', '-')}개\n"
+                + (
+                    "검토 필요: " + " / ".join(self._quality_warning(item) for item in warnings[:4])
+                    if warnings
+                    else "구조 검사 완료 · 변형과 애니메이션 품질은 별도 검토하세요."
+                )
+            )
+        else:
+            self.quality_summary.setText(
+                "기존 구조 보고서 · 모든 메시의 weight와 게임 성능 예산은 별도 확인이 필요합니다."
+                if report
+                else "품질 보고: 리깅 결과 생성 후 확인할 수 있습니다."
+            )
         for key, widget in self.summary_values.items():
             value = report.get(key) if report else None
             if isinstance(value, list):
@@ -268,6 +296,14 @@ class RiggingPanel(QWidget):
         if checked:
             self._confirmed_input = str(self.inputs.currentData() or "")
         self.run_button.setEnabled(checked and self.inputs.count() > 0 and not self._busy)
+
+    @staticmethod
+    def _quality_warning(value) -> str:
+        text = str(value)
+        if ":unbound_static_preserved:" in text:
+            name = text.partition(":")[0]
+            return f"{name}: 스킨이 없는 부속 메시를 보존했습니다. 캐릭터와 함께 움직이는지 확인하세요."
+        return text
 
     @staticmethod
     def _set_preview(label: QLabel, path: str | None, fallback: str) -> None:

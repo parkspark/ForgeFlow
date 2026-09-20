@@ -18,22 +18,26 @@ ForgeFlow는 기존 Pixal3D 이미지→3D 생성기, 승인 기반 Blender 자�
 
 ## 제공 기능
 
-- PNG/JPG/JPEG 입력과 작업별 원본 복사
+- PNG/JPG/JPEG 실제 디코딩 검사와 작업별 원본 복사
 - Pixal3D 실시간 stdout/stderr 로그, GLB/BLEND/FBX 및 PNG 미리보기 검증
-- 생성 GLB를 Blender 입력으로 자동 연결
+- 생성 GLB, 편집 BLEND, 리깅 BLEND를 Blender 입력으로 선택하고 버전 간 이동
 - Blender/MCP/Ollama/WSL/GPU 연결 상태 표시
 - `scene.inspect`로 실제 오브젝트 이름과 dimensions 표시
 - 자연어 계획 생성과 승인 전 쓰기 차단
 - 승인된 계획의 SHA-256을 고정한 뒤 동일 계획만 MCP로 실행
 - `blender/vNNN` 버전과 GLB/BLEND/FBX 계보·해시 기록
 - 원본 해시 불변 검사, 누락/0바이트 산출물 실패 처리
+- 승인 전 입력 해시 재확인, 출력 수집 중단 시 검증된 파일부터 복구
+- 리깅 후 본 검사·포즈/초기화·색상 편집과 스킨·Shape Key·Action 보존 검사
 - 최신 Blender GLB(없으면 모델링 원본)를 입력으로 사용하는 버전별 UniRig 자동 리깅
-- Unity Humanoid 본 이름 후처리, FBX/BLEND 구조 검증, rest/pose 미리보기
+- Unity Humanoid 본 이름 후처리, 전체 스킨 메시의 웨이트·Modifier 검증, 실제 변형을 확인하는 pose 미리보기
 - 리깅 결과의 `unity_input_path` 등록으로 다음 Unity 단계 입력 고정
 - Unity 프로젝트를 명시적으로 선택하고 실제 Editor project identity 확인
 - 지속형 Unity Local Agent JSONL 세션에서 자유 텍스트 명령, 로컬 모델 응답, 도구 호출과 마일스톤 표시
 - Humanoid FBX 선택 가져오기와 비덮어쓰기 `vNNN` Asset 경로·원본 SHA-256 기록
 - Unity 실행 결과, 자동 검증, 인간 검토를 서로 독립된 상태로 저장
+- 재리깅·메시 편집·프로젝트 변경 시 이전 Unity 입력/승인을 과거 기록으로 분리
+- Avatar 준비와 애니메이션 연결 요청 프리셋, Unity Avatar 및 실제 재생 검증
 - Unity 로그, JSONL, receipt, 스크린샷과 수정 피드백 기반 `repair_existing` 재실행
 - `job.json` 저장과 재시작 복구
 - 파일/결과 폴더 열기, 실패 재시도, 실행 취소
@@ -42,6 +46,8 @@ ForgeFlow는 기존 Pixal3D 이미지→3D 생성기, 승인 기반 Blender 자�
 - 입력/생성 결과 미리보기, Unity 검증 요약·재시도 안내, 작은 화면용 설정 스크롤
 
 최근 UI 개선과 확인 범위: [UI/UX 개선 기록](docs/ui-ux-improvements-2026-09-20.md).
+
+v0.2.0의 단계 간 연결·리깅 보존·Unity 애니메이션 개선과 검증 범위: [워크플로 개선 기록](docs/workflow-improvements-2026-09-20.md).
 
 ## 설치와 실행
 
@@ -72,18 +78,18 @@ forgeflow
 3. GLB/BLEND/FBX와 미리보기가 모두 존재하고 0바이트가 아닐 때만 모델링을 완료로 기록합니다.
 4. Blender 탭에서 `장면 검사`로 실제 메시 이름을 확인합니다.
 5. 정확한 이름을 포함한 한국어 요청을 입력하고 `실행 계획 만들기`를 누릅니다.
-6. 계획과 모든 구조화 인자를 검토한 뒤 `승인하고 실행`을 누릅니다. 취소하면 `asset.*` 도구는 호출되지 않습니다.
-7. 결과는 새 `blender/vNNN/<operation-id>` 폴더에 저장되고 다음 편집의 기본 입력이 됩니다.
+6. 계획과 모든 구조화 인자를 검토한 뒤 `승인하고 실행`을 누릅니다. 취소하면 쓰기 도구는 호출되지 않습니다. 계획 작성 이후 원본이 바뀌었으면 새 계획이 필요합니다.
+7. 결과는 새 `blender/vNNN/<operation-id>` 폴더에 저장되고 BLEND를 우선하여 다음 편집의 기본 입력이 됩니다. 승인된 내보내기 형식만 요구하므로 FBX 단독 내보내기도 가능합니다.
 8. `3. Humanoid 리깅` 탭에서 실제 절대 GLB 경로와 부모 버전을 확인합니다. 가장 최신의 성공한 Blender GLB가 기본 선택되며 Blender 결과가 없으면 `modeling/source.glb`가 선택됩니다. 콤보박스에서 작업에 등록된 다른 GLB 버전을 명시적으로 선택할 수 있습니다.
 9. 정면 대칭 T-pose/A-pose의 이족보행 사람형 모델임을 확인하고 Seed(기본 `12345`)를 지정한 뒤 최종 확인창의 입력·출력 경로를 검토하여 실행합니다.
 10. ForgeFlow는 Ollama VRAM을 해제한 뒤 신뢰된 `RiggingAdapter`가 `rig_humanoid.ps1`을 실행 파일/인자 배열로 직접 호출합니다. 골격 생성, 스키닝, 메시 병합, Humanoid 후처리와 구조 검증을 모두 통과해야 완료됩니다.
-11. 완료 후 Humanoid FBX/BLEND, 결과 폴더, rest/pose 미리보기를 탭에서 열 수 있습니다. 미리보기만 실패하면 구조 리깅은 `completed`로 유지하되 별도 경고를 표시합니다.
+11. 완료 후 Humanoid FBX/BLEND, 메시별 품질 정보, rest/pose 미리보기를 확인합니다. Blender 탭에는 리깅 BLEND가 연결되어 본·스킨을 유지하는 편집을 이어갈 수 있습니다. 미리보기만 실패하면 구조 리깅은 `completed`로 유지하되 별도 경고를 표시합니다.
 12. `4. Unity 텍스트 컨트롤` 탭에서 Unity 프로젝트를 선택하고, 해당 프로젝트를 연 Unity Editor Console의 `[McpBridge] Listening`을 확인한 뒤 `연결`합니다.
 13. FBX가 필요하면 `Unity 가져오기`로 `Assets/ForgeFlow/<job-id>/Models/vNNN/Character_humanoid.fbx`에 복사하고 컨텍스트 포함을 선택합니다. FBX 없이도 일반 Unity 채팅은 사용할 수 있습니다.
-14. 씬 분석, GameObject/UI/스크립트 생성, 컴파일 오류 수정, Play Mode 검사, 스크린샷 등 자유 텍스트 명령을 보냅니다. 같은 세션에서는 로컬 모델과 MCP 대화 상태가 유지됩니다.
+14. `Avatar 준비 요청` 또는 `애니메이션 연결 요청`으로 초안을 넣고 검토하여 전송할 수 있습니다. 씬 분석, GameObject/UI/스크립트 생성, 컴파일 오류 수정, Play Mode 검사 등 자유 텍스트 명령도 지원합니다. 같은 세션에서는 로컬 모델과 MCP 대화 상태가 유지됩니다.
 15. 실행 성공 후에도 Unity 단계는 `awaiting_review`입니다. Unity Editor에서 실제 결과를 확인해 `결과 승인`해야만 `completed`가 됩니다. 반려 메모는 같은 결과의 수정 요청에 포함할 수 있습니다.
 
-앱이 실행 중 강제 종료되면 `running` 단계는 다음 시작 시 `failed`로 복구되어 재시도할 수 있습니다. 완료된 `modeling/source.*`는 덮어쓰지 않습니다.
+앱이 실행 중 강제 종료되면 `running` 단계는 다음 시작 시 `failed`로 복구되어 재시도할 수 있습니다. 모델 생성 후 파일 수집만 중단되었다면 저장된 manifest와 해시를 확인하고 수집을 이어갑니다. 완료된 `modeling/source.*`는 덮어쓰지 않습니다. 메시 편집이나 재리깅으로 입력이 바뀌면 기존 Unity 결과는 이전 버전으로 표시되며 새 입력을 가져와 다시 검증해야 합니다.
 
 ## 저장 형식
 
@@ -113,7 +119,7 @@ jobs/<job-id>/
 └─ .runs/                 # 엔진의 격리된 시도별 원본 출력
 ```
 
-`job.json` 스키마 버전은 3입니다. schema v1/v2 작업은 기존 데이터를 손실하지 않고 Unity 단계와 세션/Turn 필드를 추가해 v3로 마이그레이션하며, 지원하지 않는 미래 버전은 거부합니다. UnitySession은 선택 프로젝트 identity와 프로세스 상태를, UnityTurn은 원문/effective prompt, 도구 결과, receipt, 자동 검증, 인간 검토를 저장합니다. `unity_input_path`는 검증에 성공한 최종 Humanoid FBX를 가리키지만 Unity 채팅의 필수 입력은 아닙니다.
+`job.json` 스키마 버전은 4입니다. schema v1/v2/v3 작업은 기존 기록을 보존하면서 입력 버전과 Unity 가져오기 출처 필드를 추가해 v4로 마이그레이션하며, 지원하지 않는 미래 버전은 거부합니다. UnitySession은 선택 프로젝트 identity와 프로세스 상태를, UnityTurn은 원문/effective prompt, 도구 결과, receipt, 자동 검증, 인간 검토와 입력 버전을 저장합니다. `unity_input_path`는 검증에 성공한 Humanoid FBX 또는 리깅 보존 편집의 FBX를 가리키지만 Unity 채팅의 필수 입력은 아닙니다.
 
 ## Unity 텍스트 컨트롤
 
@@ -131,11 +137,13 @@ effective prompt에는 선택 프로젝트, 현재 Job, 사용자가 명시적�
 
 Agent 성공이나 receipt `verified`는 인간 승인이 아닙니다. 성공 Turn은 기본적으로 `awaiting_review`이며 사용자가 실제 Editor/Play Mode에서 승인한 뒤에만 Unity 단계가 `completed`가 됩니다. 정적 스크린샷 자동 분석은 캐릭터 노출, 화면 잘림, UI 겹침, T-pose, 크기와 조명 같은 정적 단서의 참고용입니다. 걷기 자연스러움, 발 미끄러짐, 입력감, 카메라 부드러움, 물리와 타이밍은 정적 이미지나 로컬 모델만으로 확정하지 않습니다.
 
+애니메이션 경로는 함께 수정된 Unity MCP 0.5.0과 Unity Local Agent 1.14.0을 사용합니다. 전용 도구로 Humanoid import/Avatar 유효성을 확인하고, 제한된 Transform/Muscle 곡선의 `.anim` 및 Animator Controller를 생성·연결할 수 있습니다. 재생 검증은 Play 중 여러 시점의 클립 시간과 본 변화를 확인합니다. 전환 조건·모션 의미·자연스러움처럼 자동 확인하지 못한 요구사항은 `partial`로 남습니다. 생성한 animation/controller 및 `.meta`도 snapshot과 변경 목록에 포함됩니다.
+
 ## UniRig 환경과 성공 판정
 
 기본 환경은 `Ubuntu-24.04`의 사용자 `park`, `/home/park/local-modeling/UniRig`, Conda 환경 `/home/park/miniforge3/envs/unirig`, 공식 체크포인트 캐시 `/home/park/.cache/huggingface/hub/models--VAST-AI--UniRig`입니다. 앱의 비동기 환경 표시줄은 PowerShell 진입점, WSL 배포판, UniRig Python/저장소/`src/model/sdpa_mha.py`/체크포인트, Blender를 점검합니다. 확인 기준 commit은 `6793c6640ff01c8fb389f3993434124bb43d2933`이며 다른 commit은 실제 값을 경고로 표시하되 그것만으로 실행을 차단하지 않습니다.
 
-종료 코드 0만으로 성공하지 않습니다. 8개 핵심 파일의 존재/크기, 입력 GLB의 실행 전후 SHA-256, 파싱 가능한 `rig_report.json`, `status == "PASS"`, 양수인 본/정점 수, 빈 누락 본 배열, 전체 정점 웨이트, 1~4개의 최대 영향 본, report의 최종 FBX/BLEND 경로 일치를 모두 확인합니다. PASS는 파일·본·웨이트 구조 검사 통과일 뿐 애니메이션이나 변형의 육안 품질 보장이 아닙니다.
+종료 코드 0만으로 성공하지 않습니다. 8개 핵심 파일의 존재/크기, 입력 GLB의 실행 전후 SHA-256, 파싱 가능한 `rig_report.json`, `status == "PASS"`, 양수인 본/정점 수, 빈 누락 본 배열, 전체 정점 웨이트, 1~4개의 최대 영향 본, report의 최종 FBX/BLEND 경로 일치를 모두 확인합니다. report v2는 모든 스킨 메시의 정규화 웨이트·유효 본·Armature Modifier와 메시별 오류를 검사합니다. 본에 부착된 장식과 일반 사용자 메시는 보존하며, 연결되지 않은 장식은 검토 경고를 남깁니다. PASS는 파일·본·웨이트 구조 검사 통과일 뿐 애니메이션이나 변형의 육안 품질 보장이 아닙니다.
 
 UniRig 업스트림은 WSL 경로의 공백을 처리하지 못합니다. 입력 또는 작업 출력 경로에 공백이 있으면 `%LOCALAPPDATA%\ForgeFlow\rigging-staging\<job-id>\vNNN` 아래의 공백 없는 경로로 입력을 복사해 실행하고, 검증된 결과만 실제 `rigging/vNNN`으로 옮깁니다. staging 루트 자체에 공백이 있으면 실행 전에 명확히 실패합니다. 실패/취소 중간 파일은 Job 산출물이나 `unity_input_path`로 등록하지 않으며 `rigging.log`는 진단용으로 남깁니다.
 
@@ -216,10 +224,10 @@ Unity E2E의 씬 생성·FBX 배치는 Turn 성공과 자동 검증 `verified`�
 
 ## 현재 제한
 
-- Blender 자연어 탭의 지원 범위는 장면 검사, 재질 목록/속성, transform, Bevel, Decimate, Smooth shading, GLB/BLEND/FBX 내보내기입니다. 리깅은 LLM/MCP allow-list가 아니라 별도 신뢰 경계의 `RiggingAdapter`에서만 실행됩니다.
+- Blender 자연어 탭은 장면·리그 검사, 재질 목록/속성/색상, transform, Bevel, Decimate, Smooth shading, 본 포즈/초기화, GLB/BLEND/FBX 내보내기를 지원합니다. 스킨·Shape Key가 있는 메시의 토폴로지 변경 등 보존하기 어려운 작업은 거부합니다. 새 골격/웨이트 생성은 별도 `RiggingAdapter`에서 실행됩니다.
 - 사람형 여부를 자동 판정하지 않습니다. 이족보행 Humanoid와 정면 대칭 T-pose/A-pose를 권장하며 얼굴 리그는 포함하지 않습니다.
 - 자동 리토폴로지를 수행하지 않습니다. 고폴리 모델은 게임 투입 전 최적화가 필요하고 갑옷·치마·장식 메시의 웨이트는 수동 보정이 필요할 수 있습니다.
-- Unity 텍스트 제어 범위와 결과 품질은 로컬 모델과 unity_mcp가 제공하는 구조화 도구에 의존합니다. 이번 통합은 일반 Unity 제어 오케스트레이션이며 애니메이션 전용 기능이 아닙니다.
+- Unity 텍스트 제어 범위와 결과 품질은 로컬 모델과 unity_mcp의 구조화 도구에 의존합니다. 기본 곡선과 Controller 작성은 지원하지만 고품질 걷기·달리기 모션 생성이나 전환 의미를 완전히 자동 검증하지는 않습니다.
 - 자동 검증은 컴파일, 저장, 오브젝트/컴포넌트, Play Mode, 콘솔 오류, 스크린샷 등 객관 항목만 다룹니다. 동작 감각과 시각적 완성도의 최종 판정은 사람에게 남습니다.
 - Unity Editor는 선택 프로젝트를 미리 열고 Bridge listener를 실행해야 합니다. ForgeFlow는 Editor를 강제 종료하지 않습니다.
 - 자연어 계획 품질은 로컬 Ollama 모델에 의존하며 정확한 오브젝트/재질 이름이 요청에 없으면 에이전트가 실행 대신 후보 확인을 요구할 수 있습니다.

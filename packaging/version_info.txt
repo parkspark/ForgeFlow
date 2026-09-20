@@ -1,8 +1,8 @@
 # UTF-8
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(0, 1, 4, 0),
-    prodvers=(0, 1, 4, 0),
+    filevers=(0, 2, 0, 0),
+    prodvers=(0, 2, 0, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -16,12 +16,12 @@ VSVersionInfo(
         '041204B0',
         [StringStruct('CompanyName', 'ForgeFlow'),
          StringStruct('FileDescription', 'ForgeFlow 3D Workflow Desktop App'),
-         StringStruct('FileVersion', '0.1.4'),
+         StringStruct('FileVersion', '0.2.0'),
          StringStruct('InternalName', 'ForgeFlow'),
          StringStruct('LegalCopyright', 'Copyright (c) ForgeFlow contributors'),
          StringStruct('OriginalFilename', 'ForgeFlow.exe'),
          StringStruct('ProductName', 'ForgeFlow'),
-         StringStruct('ProductVersion', '0.1.4')])
+         StringStruct('ProductVersion', '0.2.0')])
     ]),
     VarFileInfo([VarStruct('Translation', [0x0412, 1200])])
   ]

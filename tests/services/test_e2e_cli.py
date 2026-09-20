@@ -10,6 +10,7 @@ import pytest
 
 from forgeflow.domain.job import UnityTurn
 from forgeflow.services.job_service import JobService
+from tests.asset_fixtures import glb_bytes
 
 
 @pytest.fixture
@@ -104,7 +105,7 @@ def test_rigging_uses_saved_config_and_optional_jobs_root(
 ):
     module = e2e_modules["run_rigging_e2e"]
     asset = tmp_path / "source.glb"
-    asset.write_bytes(b"source")
+    asset.write_bytes(glb_bytes("source"))
     selected_root = tmp_path / "cli-jobs" if override else config.jobs_root
     arguments = ["--asset", str(asset)]
     if override:

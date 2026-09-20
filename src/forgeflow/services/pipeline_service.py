@@ -15,6 +15,7 @@ from forgeflow.domain.job import BlenderRequest, Job, utc_now
 from forgeflow.domain.process import ProcessCommand
 
 from .job_service import JobService, sha256_file
+from .lineage import invalidate_rigging, invalidate_unity
 from .process_service import ProcessService
 
 
@@ -145,7 +146,7 @@ class PipelineService(QObject):
                 raise RuntimeError("모델링 원본 검증에 실패했습니다.")
             if exit_code != 0:
                 raise RuntimeError(f"3D 미리보기 생성이 종료 코드 {exit_code}로 실패했습니다.")
-            self.modeling.verify_artifacts([preview])
+            self.modeling.validate_preview(preview)
             self.jobs.add_artifact(
                 job,
                 Artifact(
@@ -255,8 +256,20 @@ class PipelineService(QObject):
         try:
             artifacts = self.blender.collect_execution(request, execution, original_hash)
             self.jobs.add_artifacts(job, artifacts, save=False)
-            glb = next(item.path for item in artifacts if item.kind == "glb")
-            job.blender_input_path = glb
+            by_kind = {item.kind: item.path for item in artifacts}
+            job.blender_input_path = next(
+                by_kind[kind] for kind in ("blend", "glb", "fbx") if kind in by_kind
+            )
+            if request.preserve_rig:
+                reason = (
+                    "리깅 후 Blender 편집 결과가 있습니다. 새 FBX를 가져오세요."
+                    if "fbx" in by_kind
+                    else "리깅은 보존되었습니다. Unity용 FBX를 내보낸 뒤 가져오세요."
+                )
+                invalidate_unity(job, reason, clear_input=True)
+                job.unity_input_path = by_kind.get("fbx")
+            else:
+                invalidate_rigging(job, "모델 편집 결과가 바뀌었습니다. 새 결과로 리깅하세요.")
             self.jobs.set_stage(job, "blender", "completed")
             self.job_changed.emit(job)
             self.operation_finished.emit(

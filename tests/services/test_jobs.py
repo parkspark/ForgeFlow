@@ -15,7 +15,7 @@ def test_job_creation_and_atomic_json(config, image):
     job = service.create("한글 작업", image, {"seed": 7})
     directory = service.job_directory(job.job_id)
     payload = json.loads((directory / "job.json").read_text(encoding="utf-8"))
-    assert payload["schema_version"] == 3
+    assert payload["schema_version"] == 4
     assert payload["stages"]["rigging"]["status"] == "pending"
     assert payload["stages"]["unity"]["status"] == "pending"
     assert payload["name"] == "한글 작업"
