@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+from collections import deque
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
@@ -30,6 +32,13 @@ class RiggingPanel(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._job_id: str | None = None
+        self._context: tuple | None = None
+        self._logs: dict[tuple, deque[str]] = {}
+        self._phases: dict[tuple, str] = {}
+        self._selected_inputs: dict[str, str] = {}
+        self._seeds: dict[str, int] = {}
+        self._busy = False
         layout = QVBoxLayout(self)
         guidance = QLabel(
             "정면 대칭 T-pose 또는 A-pose의 이족보행 Humanoid 권장 · 얼굴 리그 미포함 · "
@@ -107,6 +116,7 @@ class RiggingPanel(QWidget):
         layout.addWidget(QLabel("리깅 실시간 로그"))
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
+        self.log.setMaximumBlockCount(5000)
         self.log.setMaximumHeight(170)
         layout.addWidget(self.log)
         self._fbx_path: str | None = None
@@ -145,23 +155,57 @@ class RiggingPanel(QWidget):
     def clear_log(self) -> None:
         self.log.clear()
         self.phase_status.setText("세부 단계: 환경/VRAM 준비")
+        if self._context is not None:
+            self._logs.pop(self._context, None)
+            self._phases.pop(self._context, None)
 
-    def append_log(self, line: str) -> None:
-        self.log.appendPlainText(line)
+    @staticmethod
+    def _run_key(job) -> tuple:
+        request = job.latest_rigging_request
+        input_path = request.input_path if request else (job.rigging_input_path or "")
+        return (
+            job.job_id, os.path.normcase(os.path.normpath(input_path)) if input_path else "",
+            request.version if request else None, request.created_at if request else None,
+        )
+
+    def append_log(self, line: str, *, job=None) -> None:
+        context = self._run_key(job) if job is not None else self._context
+        if context is None:
+            return
+        self._logs.setdefault(context, deque(maxlen=5000)).append(line)
+        phase = self._phases.get(context, "세부 단계: 환경/VRAM 준비")
         lowered = line.lower()
         if "_skeleton.fbx" in lowered or "skeleton/articulation" in lowered:
-            self.phase_status.setText("세부 단계: 1/5 UniRig 골격 생성")
+            phase = "세부 단계: 1/5 UniRig 골격 생성"
         if "_skin.fbx" in lowered or "/skin/articulation" in lowered:
-            self.phase_status.setText("세부 단계: 2/5 UniRig 스키닝")
+            phase = "세부 단계: 2/5 UniRig 스키닝"
         if "_rigged.glb" in lowered:
-            self.phase_status.setText("세부 단계: 3/5 원본 메시와 리그 병합")
+            phase = "세부 단계: 3/5 원본 메시와 리그 병합"
         if "_humanoid.fbx" in lowered or "humanoid auto-rig completed" in lowered:
-            self.phase_status.setText("세부 단계: 4/5 Blender Humanoid 후처리/구조 검증")
+            phase = "세부 단계: 4/5 Blender Humanoid 후처리/구조 검증"
         if "preview saved" in lowered:
-            self.phase_status.setText("세부 단계: 5/5 rest/pose 미리보기")
+            phase = "세부 단계: 5/5 rest/pose 미리보기"
+        self._phases[context] = phase
+        if context == self._context:
+            self.log.appendPlainText(line)
+            self.phase_status.setText(phase)
 
     def set_job(self, job, inputs, busy: bool = False) -> None:
-        previous = self.inputs.currentData()
+        self._busy = busy
+        changed_job = job.job_id != self._job_id
+        if self._job_id is not None:
+            self._selected_inputs[self._job_id] = str(self.inputs.currentData() or "")
+            self._seeds[self._job_id] = self.seed.value()
+        previous = self._selected_inputs.get(job.job_id, "")
+        if changed_job:
+            self._job_id = job.job_id
+            self.confirm_humanoid.setChecked(False)
+            self._confirmed_input = None
+            self.seed.setValue(self._seeds.get(job.job_id, 12345))
+        context = self._run_key(job)
+        if context != self._context:
+            self._context = context
+            self.log.setPlainText("\n".join(self._logs.get(context, ())))
         self.inputs.blockSignals(True)
         self.inputs.clear()
         for candidate in inputs:
@@ -183,6 +227,10 @@ class RiggingPanel(QWidget):
             self.phase_status.setText("세부 단계: 완료")
         elif state.status in {"failed", "cancelled"}:
             self.phase_status.setText(f"세부 단계: {status_text(state.status)}")
+        elif state.status == "running":
+            self.phase_status.setText(self._phases.get(context, "세부 단계: 환경/VRAM 준비"))
+        else:
+            self.phase_status.setText("세부 단계: 대기")
         self.unity_path.setText("다음 Unity 입력: " + (job.unity_input_path or "없음"))
         self._fbx_path = job.humanoid_fbx_path
         self._blend_path = job.humanoid_blend_path
@@ -219,7 +267,7 @@ class RiggingPanel(QWidget):
     def _toggle_ready(self, checked: bool) -> None:
         if checked:
             self._confirmed_input = str(self.inputs.currentData() or "")
-        self.run_button.setEnabled(checked and self.inputs.count() > 0)
+        self.run_button.setEnabled(checked and self.inputs.count() > 0 and not self._busy)
 
     @staticmethod
     def _set_preview(label: QLabel, path: str | None, fallback: str) -> None:

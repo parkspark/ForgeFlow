@@ -14,11 +14,14 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
     QVBoxLayout,
+    QWidget,
 )
 
 from forgeflow.config import AppConfig
@@ -63,18 +66,27 @@ class SettingsDialog(QDialog):
     def __init__(self, config: AppConfig, parent=None, *, load_models: bool = True):
         super().__init__(parent)
         self.setWindowTitle("ForgeFlow 설정")
-        self.resize(760, 620)
+        available = self.screen().availableGeometry()
+        self.resize(min(760, available.width() - 40), min(620, available.height() - 80))
         self.original = config
         self.network = QNetworkAccessManager(self)
         self._generation = 0
         self._replies = set()
         layout = QVBoxLayout(self)
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        body = QWidget()
+        body_layout = QVBoxLayout(body)
         form = QFormLayout()
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         self.edits = {}
         self.browse_buttons = {}
         for key, label in PATH_FIELDS.items():
             edit = QLineEdit(str(getattr(config, key)))
             self.edits[key] = edit
+            edit.setAccessibleName(label)
             row = QHBoxLayout()
             row.addWidget(edit)
             button = QPushButton("찾아보기…")
@@ -95,7 +107,8 @@ class SettingsDialog(QDialog):
             combo.setSizeAdjustPolicy(
                 QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
             )
-            combo.setMinimumContentsLength(28)
+            combo.setMinimumContentsLength(12)
+            combo.setAccessibleName(title)
             combo.setCurrentText(getattr(config, key))
             self.model_combos[key] = combo
             form.addRow(title, combo)
@@ -103,19 +116,29 @@ class SettingsDialog(QDialog):
             status.setWordWrap(True)
             self.model_status[key] = status
             form.addRow("", status)
-        layout.addLayout(form)
+        body_layout.addLayout(form)
         self.refresh_button = QPushButton("설치 모델 새로고침")
         self.refresh_button.clicked.connect(self.refresh_models)
-        layout.addWidget(self.refresh_button)
+        body_layout.addWidget(self.refresh_button)
         self.error_label = QLabel()
         self.error_label.setWordWrap(True)
-        layout.addWidget(self.error_label)
-        buttons = QDialogButtonBox(
+        body_layout.addWidget(self.error_label)
+        body_layout.addStretch()
+        self.scroll_area.setWidget(body)
+        body.setAutoFillBackground(False)
+        self.scroll_area.viewport().setAutoFillBackground(False)
+        layout.addWidget(self.scroll_area, 1)
+        self.buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
         )
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        self.buttons.button(QDialogButtonBox.StandardButton.Save).setText("저장")
+        self.buttons.button(QDialogButtonBox.StandardButton.Save).setProperty(
+            "actionRole", "primary"
+        )
+        self.buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("취소")
+        self.buttons.accepted.connect(self.accept)
+        self.buttons.rejected.connect(self.reject)
+        layout.addWidget(self.buttons)
         self.finished.connect(self._cancel_requests)
         if load_models:
             QTimer.singleShot(0, self.refresh_models)
@@ -233,6 +256,7 @@ class SettingsDialog(QDialog):
             self.value(self.original)
         except (ValueError, OSError) as exc:
             self.error_label.setText(f"저장할 수 없습니다: {exc}")
+            QTimer.singleShot(0, lambda: self.scroll_area.ensureWidgetVisible(self.error_label))
             return
         self.error_label.clear()
         super().accept()

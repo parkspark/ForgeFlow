@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from PySide6.QtCore import Signal
@@ -27,6 +28,9 @@ class BlenderPanel(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._context: tuple[str, str] | None = None
+        self._drafts: dict[tuple[str, str], str] = {}
+        self._inspections: dict[tuple[str, str], str] = {}
         layout = QVBoxLayout(self)
         supported = QLabel(
             "지원: 장면/재질 검사, 재질 속성, 위치·회전·크기, Bevel, Decimate, Smooth shading, GLB/BLEND/FBX 내보내기\n"
@@ -35,6 +39,7 @@ class BlenderPanel(QWidget):
         supported.setWordWrap(True)
         layout.addWidget(supported)
         self.input_label = QLabel("Blender 입력: 없음")
+        self.input_label.setWordWrap(True)
         layout.addWidget(self.input_label)
         inspect_row = QHBoxLayout()
         self.inspect = QPushButton("장면 검사")
@@ -80,7 +85,16 @@ class BlenderPanel(QWidget):
         )
         layout.addWidget(self.versions)
 
-    def set_inspection(self, payload: dict) -> None:
+    @staticmethod
+    def _key(job_id: str, input_path: str | None) -> tuple[str, str]:
+        return str(job_id), os.path.normcase(os.path.normpath(input_path)) if input_path else ""
+
+    def set_inspection(
+        self, payload: dict, *, job_id: str | None = None, input_path: str | None = None,
+    ) -> None:
+        context = self._key(job_id, input_path) if job_id is not None else self._context
+        if context is None:
+            return
         data = payload.get("data", {})
         lines = ["오브젝트:"]
         for item in data.get("objects", []):
@@ -90,13 +104,28 @@ class BlenderPanel(QWidget):
         materials = data.get("materials", [])
         if materials:
             lines.append("재질: " + ", ".join(item.get("name", "") for item in materials))
-        self.scene.setPlainText("\n".join(lines))
+        text = "\n".join(lines)
+        self._inspections[context] = text
+        if context == self._context:
+            self.scene.setPlainText(text)
 
     def set_job(self, job, busy: bool = False) -> None:
+        context = self._key(job.job_id, job.blender_input_path)
+        if context != self._context:
+            if self._context is not None:
+                self._drafts[self._context] = self.request.toPlainText()
+            self._context = context
+            self.request.setPlainText(self._drafts.get(context, ""))
+            self.scene.setPlainText(self._inspections.get(context, ""))
         self.input_label.setText("Blender 입력: " + (job.blender_input_path or "없음"))
         request = job.latest_blender_request
         awaiting = bool(request and request.status == "awaiting_approval")
-        if awaiting and request.plan:
+        matching_input = bool(
+            request and self._key(job.job_id, request.input_path) == context
+        )
+        if awaiting and not matching_input:
+            self.plan.setPlainText("입력이 변경되었습니다. 기존 계획을 취소한 뒤 새 입력으로 계획을 만들어 주세요.")
+        elif awaiting and request.plan:
             lines = []
             for step in request.plan.get("steps", []):
                 lines.append(
@@ -117,5 +146,5 @@ class BlenderPanel(QWidget):
         ready = bool(job.blender_input_path)
         self.inspect.setEnabled(ready and not busy)
         self.propose.setEnabled(ready and not busy and not awaiting)
-        self.approve.setEnabled(awaiting and not busy)
+        self.approve.setEnabled(awaiting and matching_input and bool(request.plan) and not busy)
         self.deny.setEnabled(awaiting and not busy)

@@ -5,6 +5,7 @@ import os
 from dataclasses import replace
 from pathlib import Path
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -18,7 +19,9 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSplitter,
+    QStackedWidget,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -43,7 +46,36 @@ from .panels.progress_panel import ProgressPanel
 from .panels.project_panel import ProjectPanel
 from .panels.rigging_panel import RiggingPanel
 from .panels.unity_panel import UnityPanel
+from .status import set_status_badge
 from .theme import build_stylesheet, normalize_theme
+
+
+class WorkspaceTitle(QLabel):
+    """Keep the selected job identifiable when the sidebar is filtered or narrow."""
+
+    def __init__(self):
+        super().__init__()
+        self.full_text = ""
+        self.setTextFormat(Qt.TextFormat.PlainText)
+        self.setObjectName("workspaceTitle")
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+
+    def set_title(self, text: str) -> None:
+        self.full_text = text
+        self.setToolTip(text)
+        self.setAccessibleName(text)
+        self._elide()
+
+    def _elide(self) -> None:
+        self.setText(
+            self.fontMetrics().elidedText(
+                self.full_text, Qt.TextElideMode.ElideRight, max(0, self.width())
+            )
+        )
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._elide()
 
 
 class MainWindow(QMainWindow):
@@ -193,7 +225,51 @@ class MainWindow(QMainWindow):
         work_area = QWidget()
         work_layout = QVBoxLayout(work_area)
         work_layout.setContentsMargins(0, 0, 0, 0)
-        work_layout.addWidget(self.tabs, 1)
+        self.workspace_header = QWidget()
+        header_layout = QHBoxLayout(self.workspace_header)
+        header_layout.setContentsMargins(10, 0, 6, 0)
+        self.workspace_title = WorkspaceTitle()
+        self.workspace_status = QLabel()
+        header_layout.addWidget(self.workspace_title, 1)
+        header_layout.addWidget(self.workspace_status)
+        work_layout.addWidget(self.workspace_header)
+        self.workspace_header.hide()
+        self.workspace_stack = QStackedWidget()
+        self.welcome = QWidget()
+        welcome_layout = QVBoxLayout(self.welcome)
+        welcome_layout.setContentsMargins(32, 24, 32, 24)
+        welcome_layout.addStretch()
+        welcome_title = QLabel("이미지 한 장으로 3D 작업을 시작하세요")
+        welcome_title.setObjectName("welcomeTitle")
+        welcome_title.setWordWrap(True)
+        welcome_layout.addWidget(welcome_title)
+        description = QLabel(
+            "PNG 또는 JPG 이미지를 선택하면 원본을 복사해 새 작업을 만듭니다.\n"
+            "생성 결과와 편집 이력은 작업별로 보관됩니다."
+        )
+        description.setWordWrap(True)
+        welcome_layout.addWidget(description)
+        steps = QLabel("이미지 → 3D 모델 생성 → Blender 편집 → Humanoid 리깅 → Unity")
+        steps.setWordWrap(True)
+        steps.setProperty("sectionCaption", "true")
+        welcome_layout.addWidget(steps)
+        self.welcome_create = QPushButton("이미지로 새 작업 만들기")
+        self.welcome_create.setProperty("actionRole", "primary")
+        self.welcome_create.clicked.connect(self.create_job)
+        welcome_layout.addWidget(self.welcome_create, 0, Qt.AlignmentFlag.AlignLeft)
+        self.welcome_settings = QPushButton("실행 환경 설정")
+        self.welcome_settings.clicked.connect(self.edit_settings)
+        welcome_layout.addWidget(self.welcome_settings, 0, Qt.AlignmentFlag.AlignLeft)
+        welcome_layout.addStretch()
+        self.welcome_page = QScrollArea()
+        self.welcome_page.setWidgetResizable(True)
+        self.welcome_page.setFrameShape(QFrame.Shape.NoFrame)
+        self.welcome_page.setWidget(self.welcome)
+        self.welcome.setAutoFillBackground(False)
+        self.welcome_page.viewport().setAutoFillBackground(False)
+        self.workspace_stack.addWidget(self.welcome_page)
+        self.workspace_stack.addWidget(self.tabs)
+        work_layout.addWidget(self.workspace_stack, 1)
         self.progress_panel = ProgressPanel()
         self.cancel_button = self.progress_panel.cancel
         work_layout.addWidget(self.progress_panel)
@@ -211,7 +287,7 @@ class MainWindow(QMainWindow):
     def _update_detail_heights(self) -> None:
         # Reserve room for the working tab on short/high-DPI screens. Details
         # can scroll independently while the operation/cancel row stays fixed.
-        detail_height = max(60, (self.height() - 400) // 2)
+        detail_height = max(44, (self.height() - 440) // 2)
         self.environment_details.setMaximumHeight(min(140, detail_height))
         self.progress_panel.log.setMaximumHeight(min(180, detail_height))
 
@@ -248,8 +324,8 @@ class MainWindow(QMainWindow):
         self.unity_panel.repair_requested.connect(self.repair_unity_turn)
         self.unity_panel.open_path_requested.connect(self.open_path)
         self.unity_panel.focus_unity_requested.connect(self.focus_unity)
-        self.unity.event_received.connect(self.unity_panel.append_event)
-        self.unity.session_changed.connect(self.unity_panel.set_session)
+        self.unity.event_received.connect(self._unity_event)
+        self.unity.session_changed.connect(self._unity_session_changed)
         self.unity.job_changed.connect(self._job_changed)
         self.unity.protocol_error.connect(self._unity_error)
         self.unity.log_received.connect(lambda line: self.log_panel.append(f"[Unity Agent] {line}"))
@@ -258,12 +334,10 @@ class MainWindow(QMainWindow):
         self.pipeline.event_received.connect(self.progress_panel.on_event)
         self.pipeline.operation_finished.connect(self.progress_panel.finish)
         self.progress_panel.cancel_requested.connect(self.pipeline.cancel_active)
-        self.pipeline.log_received.connect(self.rigging_panel.append_log)
+        self.pipeline.log_received.connect(self._route_rigging_log)
         self.pipeline.job_changed.connect(self._job_changed)
-        self.pipeline.inspect_ready.connect(self.blender_panel.set_inspection)
-        self.pipeline.plan_ready.connect(
-            lambda _job, _request: self._show_panel(self.blender_panel)
-        )
+        self.pipeline.inspect_ready.connect(self._inspection_ready)
+        self.pipeline.plan_ready.connect(self._plan_ready)
         self.pipeline.operation_finished.connect(self._operation_finished)
         self.refresh_environment_button.clicked.connect(self.refresh_environment)
         self.theme_selector.currentIndexChanged.connect(self._theme_changed)
@@ -343,7 +417,15 @@ class MainWindow(QMainWindow):
 
     def _render_job(self) -> None:
         if not self.current_job:
+            self.workspace_header.hide()
+            self.workspace_stack.setCurrentWidget(self.welcome_page)
             return
+        self.workspace_stack.setCurrentWidget(self.tabs)
+        self.workspace_header.show()
+        self.workspace_title.set_title(self.current_job.name)
+        stage = self.current_job.current_stage
+        title = {"modeling": "모델링", "blender": "Blender", "rigging": "리깅", "unity": "Unity"}
+        set_status_badge(self.workspace_status, title[stage], self.current_job.stages[stage].status)
         self.modeling_panel.set_job(self.current_job, self.pipeline.busy)
         self.blender_panel.set_job(self.current_job, self.pipeline.busy)
         self.rigging_panel.set_job(
@@ -361,6 +443,30 @@ class MainWindow(QMainWindow):
             self.unity_panel.set_session(None)
         self.cancel_button.setEnabled(self.pipeline.busy)
         self._update_next_steps()
+
+    def _inspection_ready(self, payload: dict) -> None:
+        job = self.pipeline._active_job
+        self.blender_panel.set_inspection(
+            payload,
+            job_id=job.job_id if job else None,
+            input_path=job.blender_input_path if job else None,
+        )
+
+    def _route_rigging_log(self, line: str) -> None:
+        if self.pipeline.busy and self.pipeline._operation.startswith("rigging"):
+            self.rigging_panel.append_log(line, job=self.pipeline._active_job)
+
+    def _unity_event(self, event: dict) -> None:
+        if self.current_job and self.unity.job and self.current_job.job_id == self.unity.job.job_id:
+            self.unity_panel.append_event(event)
+
+    def _unity_session_changed(self, session) -> None:
+        if self.current_job and self.unity.job and self.current_job.job_id == self.unity.job.job_id:
+            self.unity_panel.set_session(session)
+
+    def _plan_ready(self, job: Job, _request) -> None:
+        if self.current_job and self.current_job.job_id == job.job_id:
+            self._show_panel(self.blender_panel)
 
     @staticmethod
     def _usable_result(value, suffix) -> bool:
@@ -642,7 +748,6 @@ class MainWindow(QMainWindow):
         if self._gpu_blocked_by_unity():
             return
         try:
-            self.rigging_panel.clear_log()
             self.pipeline.start_rigging(self.current_job, selected_input, seed)
             self._show_panel(self.rigging_panel)
             self._render_job()
@@ -681,14 +786,18 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(message, 15000)
         self.log_panel.append(("[완료] " if success else "[실패] ") + message)
         self._render_job()
-        if success and operation in {"modeling", "blender_plan", "blender", "rigging"}:
+        active = self.pipeline._active_job
+        current = active is None or bool(
+            self.current_job and self.current_job.job_id == active.job_id
+        )
+        if current and success and operation in {"modeling", "blender_plan", "blender", "rigging"}:
             if operation == "modeling":
                 self._show_panel(self.modeling_panel)
             elif operation == "rigging":
                 self._show_panel(self.rigging_panel)
             else:
                 self._show_panel(self.blender_panel)
-        if not success and operation not in {"blender_plan"}:
+        if current and not success and operation not in {"blender_plan"}:
             QMessageBox.warning(self, "실행 결과", message)
 
     def open_path(self, value: str) -> None:

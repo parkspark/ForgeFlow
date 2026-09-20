@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QKeySequence, QPixmap, QShortcut
+from PySide6.QtGui import QKeySequence, QPixmap, QShortcut, QTextCursor
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -50,6 +50,12 @@ class UnityPanel(QWidget):
         self.job: Job | None = None
         self.session: UnitySession | None = None
         self._latest_turn: UnityTurn | None = None
+        self._busy = False
+        self._submitting = False
+        self._submission_notice = ""
+        self._history_job_id: str | None = None
+        self._review_key: tuple[str | None, str | None] | None = None
+        self._job_drafts: dict[str, tuple[str, str]] = {}
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -117,6 +123,10 @@ class UnityPanel(QWidget):
         composer_layout = QVBoxLayout(composer)
         composer_layout.setContentsMargins(10, 10, 10, 10)
         composer_layout.setSpacing(8)
+        self.request_status = QLabel()
+        self.request_status.setObjectName("guidance")
+        self._make_wrapping_label_shrinkable(self.request_status)
+        composer_layout.addWidget(self.request_status)
         self.input = QTextEdit()
         self.input.setObjectName("unityPromptInput")
         self.input.setAccessibleName("Unity 요청 입력")
@@ -126,6 +136,7 @@ class UnityPanel(QWidget):
         )
         self.input.setMinimumHeight(82)
         self.input.setMaximumHeight(120)
+        self.input.textChanged.connect(self._draft_changed)
         composer_layout.addWidget(self.input)
         options = QHBoxLayout()
         options.setSpacing(12)
@@ -146,6 +157,7 @@ class UnityPanel(QWidget):
         actions = QHBoxLayout()
         actions.addStretch()
         self.cancel_button = QPushButton("실행 취소")
+        self.cancel_button.setToolTip("현재 명령을 중지합니다. 이미 적용된 Unity 변경과 실행 로그는 남습니다.")
         self.cancel_button.clicked.connect(self.cancel_requested)
         self.send_button = QPushButton("전송  Ctrl+Enter")
         self.send_button.setProperty("actionRole", "primary")
@@ -209,9 +221,9 @@ class UnityPanel(QWidget):
         self.recent_projects.setPlaceholderText("최근 프로젝트")
         self.recent_projects.currentTextChanged.connect(self._recent_selected)
         project_row.addWidget(self.recent_projects, 1)
-        browse = QPushButton("찾아보기")
-        browse.clicked.connect(self.browse_project_requested)
-        project_row.addWidget(browse)
+        self.browse_button = QPushButton("찾아보기")
+        self.browse_button.clicked.connect(self.browse_project_requested)
+        project_row.addWidget(self.browse_button)
         connection_layout.addLayout(project_row)
         connection_actions = QGridLayout()
         self.connect_button = QPushButton("연결")
@@ -219,6 +231,7 @@ class UnityPanel(QWidget):
         self.connect_button.clicked.connect(
             lambda: self.connect_requested.emit(self.project_path.text().strip())
         )
+        self.project_path.textChanged.connect(self._refresh_actions)
         self.disconnect_button = QPushButton("연결 해제")
         self.disconnect_button.clicked.connect(self.disconnect_requested)
         self.open_project_button = QPushButton("프로젝트 폴더 열기")
@@ -291,14 +304,20 @@ class UnityPanel(QWidget):
         self.checks = QPlainTextEdit()
         self.checks.setReadOnly(True)
         self.checks.setMaximumHeight(130)
+        self.checks.setAccessibleName("자동 검증 항목과 미검증 항목")
+        self.review_next_step = QLabel()
+        self.review_next_step.setObjectName("guidance")
+        self._make_wrapping_label_shrinkable(self.review_next_step)
         self.review_note = QTextEdit()
         self.review_note.setPlaceholderText("검토 메모 또는 수정 요청을 입력하세요.")
         self.review_note.setMinimumHeight(76)
         self.review_note.setMaximumHeight(110)
+        self.review_note.textChanged.connect(self._refresh_actions)
         review_form.addRow("에이전트", self.execution_result)
         review_form.addRow("자동 검증", self.automated_result)
         review_form.addRow("인간 검토", self.human_result)
         review_form.addRow("검증 상세", self.checks)
+        review_form.addRow("다음 단계", self.review_next_step)
         review_form.addRow("검토 메모", self.review_note)
         return review
 
@@ -311,7 +330,7 @@ class UnityPanel(QWidget):
         self.accept_button.clicked.connect(self._accept)
         self.reject_button = QPushButton("수정 필요")
         self.reject_button.clicked.connect(self._reject)
-        self.repair_button = QPushButton("실패/기존 결과 수정")
+        self.repair_button = QPushButton("메모 내용으로 수정 요청")
         self.repair_button.clicked.connect(self._repair)
         self.focus_button = QPushButton("Unity 창으로 이동")
         self.focus_button.clicked.connect(self.focus_unity_requested)
@@ -337,6 +356,7 @@ class UnityPanel(QWidget):
     def _make_wrapping_label_shrinkable(label: QLabel) -> None:
         """Let long, unbroken paths wrap inside the narrow sidebar."""
         label.setWordWrap(True)
+        label.setTextFormat(Qt.TextFormat.PlainText)
         label.setMinimumWidth(0)
         label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
 
@@ -357,7 +377,20 @@ class UnityPanel(QWidget):
         self.recent_projects.blockSignals(False)
 
     def set_job(self, job: Job, busy: bool = False) -> None:
+        changed_job = self.job is None or self.job.job_id != job.job_id
+        if changed_job and self.job is not None:
+            self._job_drafts[self.job.job_id] = (
+                self.input.toPlainText(), self.project_path.text(),
+            )
         self.job = job
+        self._busy = busy
+        if changed_job:
+            prompt, project = self._job_drafts.get(
+                job.job_id, ("", job.unity_project_path or ""),
+            )
+            self.input.setPlainText(prompt)
+            self.project_path.setText(project)
+            self._submission_notice = ""
         self.job_label.setText(f"{job.name} ({job.job_id})")
         self.fbx_label.setText(
             job.unity_input_path or "없음 — FBX 없이도 Unity 채팅을 사용할 수 있습니다."
@@ -365,8 +398,6 @@ class UnityPanel(QWidget):
         self.asset_label.setText(job.unity_asset_path or "가져온 Asset 없음")
         self.fbx_label.setToolTip(job.unity_input_path or "")
         self.asset_label.setToolTip(job.unity_asset_path or "")
-        if job.unity_project_path and not self.project_path.text().strip():
-            self.project_path.setText(job.unity_project_path)
         self.import_button.setEnabled(bool(job.unity_input_path) and not busy)
         self.include_asset.setEnabled(bool(job.unity_asset_path))
         if not job.unity_asset_path:
@@ -374,6 +405,7 @@ class UnityPanel(QWidget):
         self._latest_turn = job.latest_unity_turn
         self._render_history(job)
         self._render_review(self._latest_turn)
+        self._refresh_actions()
 
     def _render_history(self, job: Job) -> None:
         lines: list[str] = []
@@ -381,16 +413,35 @@ class UnityPanel(QWidget):
             lines.append(f"\n[사용자 · {turn.turn_id}]\n{turn.user_text}")
             if turn.assistant_text:
                 lines.append(f"\n[로컬 모델]\n{turn.assistant_text}")
+            if turn.error:
+                lines.append(f"\n[실패 원인]\n{turn.error}")
             lines.append(
                 f"\n[상태] Agent={status_text(turn.status)} · 자동={status_text(turn.automated_status)} · "
                 f"인간={status_text(turn.human_review_status)}"
             )
-        self.chat.setPlainText("\n".join(lines).strip())
-        self.chat.moveCursor(self.chat.textCursor().MoveOperation.End)
+        history = "\n".join(lines).strip()
+        same_job = self._history_job_id == job.job_id
+        scroll = self.chat.verticalScrollBar()
+        position = scroll.value()
+        follow_latest = not same_job or position >= scroll.maximum() - 2
+        old_cursor = self.chat.textCursor()
+        anchor, cursor_position = old_cursor.anchor(), old_cursor.position()
+        if history != self.chat.toPlainText():
+            self.chat.setPlainText(history)
+            if same_job and not follow_latest:
+                cursor = self.chat.textCursor()
+                limit = self.chat.document().characterCount() - 1
+                cursor.setPosition(min(anchor, limit))
+                cursor.setPosition(min(cursor_position, limit), QTextCursor.MoveMode.KeepAnchor)
+                self.chat.setTextCursor(cursor)
+        scroll.setValue(scroll.maximum() if follow_latest else position)
+        self._history_job_id = job.job_id
 
     def set_session(self, session: UnitySession | None) -> None:
         self.session = session
         status = session.status if session else "disconnected"
+        if session and status in {"starting", "ready"}:
+            self.project_path.setText(session.project_path)
         ready = bool(session and session.status == "ready")
         failed = status == "failed"
         state = "ok" if ready else ("error" if failed else "idle")
@@ -405,7 +456,11 @@ class UnityPanel(QWidget):
         dependent_text = "연결됨" if ready else ("연결 실패" if failed else "확인 전")
         self._set_connection_label(self.mcp_status, f"Unity MCP  ·  {dependent_text}", state)
         self._set_connection_label(self.bridge_status, f"Editor Bridge  ·  {dependent_text}", state)
-        if session and session.project_identity:
+        if session and session.error and failed:
+            self._set_connection_label(
+                self.identity_status, f"연결 오류: {session.error}", "error"
+            )
+        elif session and session.project_identity:
             identity = session.project_identity
             self._set_connection_label(
                 self.identity_status,
@@ -432,10 +487,82 @@ class UnityPanel(QWidget):
             hint = "프로젝트 연결 대기"
         self._set_connection_label(self.chat_connection_hint, hint, state)
         self.restart_notice.setVisible(session is not None and status in {"starting", "ready"})
-        self.connect_button.setEnabled(status in {"disconnected", "closed", "failed"})
-        self.disconnect_button.setEnabled(session is not None and status in {"starting", "ready"})
-        self.send_button.setEnabled(ready)
-        self.cancel_button.setEnabled(ready)
+        self.connect_button.setText("다시 연결" if status in {"closed", "failed"} else "연결")
+        self._refresh_actions()
+
+    def _draft_changed(self) -> None:
+        self._submission_notice = ""
+        self._refresh_actions()
+
+    def _can_request(self) -> bool:
+        running = bool(
+            self._latest_turn and self._latest_turn.status == "running"
+            and self.session and self._latest_turn.session_id == self.session.session_id
+        )
+        return bool(
+            self.job and self.session and self.session.status == "ready"
+            and not self._busy and not running and not self._submitting
+        )
+
+    def _refresh_actions(self) -> None:
+        # Text signals can fire while the sidebar is still being constructed.
+        if not hasattr(self, "scene_button"):
+            return
+        status = self.session.status if self.session else "disconnected"
+        ready = status == "ready"
+        running = bool(
+            self._latest_turn and self._latest_turn.status == "running"
+            and self.session and self._latest_turn.session_id == self.session.session_id
+        )
+        can_request = self._can_request()
+        self.send_button.setEnabled(can_request and bool(self.input.toPlainText().strip()))
+        self.cancel_button.setEnabled(ready and running)
+        self.connect_button.setEnabled(
+            bool(self.job and self.project_path.text().strip()) and not self._busy
+            and status in {"disconnected", "closed", "failed"}
+        )
+        self.disconnect_button.setEnabled(status in {"starting", "ready"})
+        for control in (self.project_path, self.recent_projects, self.browse_button):
+            control.setEnabled(status not in {"starting", "ready"})
+        self.open_project_button.setEnabled(bool(self.project_path.text().strip()))
+        self.import_button.setEnabled(bool(
+            self.job and self.job.unity_input_path and self.project_path.text().strip()
+            and not self._busy and not running
+        ))
+        if not self.job:
+            message = "먼저 ForgeFlow 작업을 선택하고 Unity 프로젝트를 연결하세요."
+        elif self._busy:
+            message = "다른 단계를 실행 중입니다. 완료 후 Unity 요청을 전송할 수 있습니다."
+        elif status == "starting":
+            message = "Unity 연결을 확인 중입니다. 요청을 미리 작성해 둘 수 있습니다."
+        elif not ready:
+            action = "다시 연결" if status in {"failed", "closed"} else "연결"
+            message = f"Unity Editor에서 해당 프로젝트를 연 뒤 보조 패널의 ‘{action}’을 누르세요. 입력은 유지됩니다."
+        elif running or self._submitting:
+            message = "명령을 실행 중입니다. 다음 요청을 작성해 두거나 현재 실행을 취소할 수 있습니다."
+        else:
+            message = self._submission_notice or "요청을 입력한 뒤 Ctrl+Enter로 전송하세요."
+        self.request_status.setText(message)
+        self.send_button.setToolTip(message)
+        turn = self._latest_turn
+        pending = bool(turn and turn.status == "succeeded" and turn.human_review_status == "pending")
+        self.accept_button.setEnabled(pending and not self._busy)
+        self.reject_button.setEnabled(pending and not self._busy)
+        repairable = bool(turn and (
+            turn.status in {"failed", "cancelled"} or turn.human_review_status == "rejected"
+        ))
+        self.repair_button.setEnabled(can_request and repairable and bool(self.review_note.toPlainText().strip()))
+        self.repair_button.setToolTip(
+            "검토 메모에 바꿀 내용을 적고 연결 상태를 확인한 뒤 수정 요청을 보내세요."
+        )
+        for button, kind in (
+            (self.screenshot_button, "screenshot"), (self.receipt_button, "receipt"),
+            (self.log_button, "log"), (self.scene_button, "scene"),
+        ):
+            path = self._latest_path(kind)
+            available = bool(path and Path(path).is_file())
+            button.setEnabled(available)
+            button.setToolTip(path if available else "이 실행에 열 수 있는 파일이 아직 없습니다.")
 
     @staticmethod
     def _set_connection_label(label: QLabel, text: str, state: str) -> None:
@@ -446,10 +573,14 @@ class UnityPanel(QWidget):
         label.update()
 
     def append_event(self, event: dict) -> None:
+        scroll = self.chat.verticalScrollBar()
+        position = scroll.value()
+        follow_latest = position >= scroll.maximum() - 2
         event_type = event.get("type")
         if event_type == "assistant_text":
-            self.chat.moveCursor(self.chat.textCursor().MoveOperation.End)
-            self.chat.insertPlainText(str(event.get("text") or ""))
+            cursor = QTextCursor(self.chat.document())
+            cursor.movePosition(QTextCursor.MoveOperation.End)
+            cursor.insertText(str(event.get("text") or ""))
         elif event_type == "turn_started":
             self.chat.appendPlainText(f"\n[실행 시작 · {event.get('id')}]")
         elif event_type == "tool_started":
@@ -473,6 +604,7 @@ class UnityPanel(QWidget):
                 f"[{event.get('label', 'AI 정적 분석 — 참고용')}]\n{event.get('text', '')}\n"
                 "정적 분석은 동적 품질의 인간 검토를 대체하지 않습니다."
             )
+        scroll.setValue(scroll.maximum() if follow_latest else position)
 
     def _show_screenshot(self, path: str) -> None:
         pixmap = QPixmap(path)
@@ -490,11 +622,16 @@ class UnityPanel(QWidget):
 
     def _render_review(self, turn: UnityTurn | None) -> None:
         self._latest_turn = turn
+        review_key = (self.job.job_id if self.job else None, turn.turn_id if turn else None)
+        if review_key != self._review_key:
+            self.review_note.setPlainText(turn.human_review_note if turn else "")
+            self._review_key = review_key
         if turn is None:
             self.execution_result.setText("실행 결과: 대기")
             self.automated_result.setText("자동 검증: 검증 정보 없음")
             self.human_result.setText("사용자 검토: 대기")
             self.checks.clear()
+            self.review_next_step.setText("요청을 실행하면 검증 결과와 검토할 파일이 여기에 표시됩니다.")
             self.screenshot_preview.clear()
             self.screenshot_preview.setText("스크린샷 없음")
             self.screenshot_preview.setVisible(False)
@@ -504,30 +641,38 @@ class UnityPanel(QWidget):
         self.execution_result.setText(f"실행 결과: {status_text(turn.status)}")
         self.automated_result.setText(f"자동 검증: {status_text(turn.automated_status)}")
         self.human_result.setText(f"사용자 검토: {status_text(turn.human_review_status)}")
-        self.checks.setPlainText(
-            json.dumps(
-                {
-                    "requested": turn.requested_checks,
-                    "measured": turn.measured_checks,
-                    "skipped": turn.skipped_checks,
-                    "unmapped": turn.unmapped_requirements,
-                },
-                ensure_ascii=False,
-                indent=2,
-            )
-        )
+        measured = {json.dumps(item, sort_keys=True, ensure_ascii=False) for item in turn.measured_checks}
+        missing = [item for item in turn.requested_checks if json.dumps(item, sort_keys=True, ensure_ascii=False) not in measured]
+        detail = [f"측정 {len(turn.measured_checks)}개 / 요청 {len(turn.requested_checks)}개"]
+        for title, items in (
+            ("측정한 항목", turn.measured_checks), ("측정하지 못한 항목", missing),
+            ("건너뛴 항목", turn.skipped_checks), ("추가로 직접 확인할 요구사항", turn.unmapped_requirements),
+        ):
+            if items:
+                detail.append(f"\n{title}\n" + "\n".join(f"• {self._check_label(item)}" for item in items))
+        self.checks.setPlainText("\n".join(detail))
         if not turn.requested_checks or not turn.measured_checks:
             self.automated_result.setText(
                 f"자동 검증: {status_text(turn.automated_status)} — 자동 검증 항목이 없거나 "
                 "불완전합니다. 실행 결과를 Unity에서 직접 확인하세요."
             )
-        pending = turn.status == "succeeded" and turn.human_review_status == "pending"
-        self.accept_button.setEnabled(pending)
-        self.reject_button.setEnabled(pending)
-        self.repair_button.setEnabled(
-            turn.human_review_status == "rejected" or turn.status == "failed"
-        )
-        self.review_note.setPlainText(turn.human_review_note)
+        elif missing or turn.skipped_checks or turn.unmapped_requirements:
+            self.automated_result.setText(
+                f"자동 검증: {status_text(turn.automated_status)} · 직접 확인할 항목이 남아 있습니다."
+            )
+        if turn.status == "running":
+            next_step = "실행 중입니다. 완료 후 검증 결과와 스크린샷을 확인하세요."
+        elif turn.status == "failed":
+            next_step = f"실패 원인: {turn.error or '실행 로그에서 오류를 확인하세요.'}\n로그를 확인하고 검토 메모에 수정할 내용을 적어 주세요."
+        elif turn.status == "cancelled":
+            next_step = "실행을 취소했습니다. Unity의 부분 변경을 확인한 뒤 다시 연결하고 수정 메모를 작성하세요."
+        elif turn.human_review_status == "rejected":
+            next_step = "검토 메모에 바꿀 내용을 적고 ‘메모 내용으로 수정 요청’을 누르세요."
+        elif turn.human_review_status == "accepted":
+            next_step = "검토 결과를 승인했습니다. 새 요청을 입력해 작업을 이어갈 수 있습니다."
+        else:
+            next_step = "검증 상세와 Unity 실행 화면을 직접 확인한 뒤 결과를 승인하거나 ‘수정 필요’를 선택하세요."
+        self.review_next_step.setText(next_step)
         if turn.screenshot_paths:
             self._show_screenshot(turn.screenshot_paths[-1])
         else:
@@ -535,27 +680,58 @@ class UnityPanel(QWidget):
             self.screenshot_preview.setText("스크린샷 없음")
             self.screenshot_preview.setVisible(False)
 
+    @staticmethod
+    def _check_label(item) -> str:
+        if not isinstance(item, str):
+            return json.dumps(item, ensure_ascii=False)
+        key, separator, suffix = item.partition(":")
+        label = {
+            "scene_objects": "씬 오브젝트", "gameplay": "Play Mode 실행",
+            "screenshot": "스크린샷", "movement": "이동", "jump": "점프",
+            "camera_follow": "카메라 추종", "asset_instance": "선택 자산 배치",
+            "asset_framing": "선택 자산의 화면 배치", "components": "컴포넌트",
+        }.get(key, key)
+        return f"{label} · {suffix}" if separator else label
+
     def _send(self) -> None:
         text = self.input.toPlainText()
-        if text.strip():
+        if not self._can_request() or not text.strip():
+            return
+        previous_id = self._latest_turn.turn_id if self._latest_turn else None
+        self._submitting = True
+        self._refresh_actions()
+        try:
             self.send_requested.emit(
                 text,
                 self.include_asset.isChecked(),
                 self.include_scene.isChecked(),
                 self.analyze_screenshot.isChecked(),
             )
+        finally:
+            self._submitting = False
+        # The parent updates this panel when the adapter has accepted a new turn.
+        # Validation/transport failures must not consume the user's draft.
+        accepted = bool(
+            self._latest_turn and self._latest_turn.turn_id != previous_id
+            and self._latest_turn.user_text == text
+            and self._latest_turn.status in {"running", "succeeded"}
+        )
+        if accepted and self.input.toPlainText() == text:
             self.input.clear()
+        elif not accepted:
+            self._submission_notice = "요청이 시작되지 않았습니다. 입력은 보관했습니다. 연결 상태와 오류 안내를 확인한 뒤 다시 전송하세요."
+        self._refresh_actions()
 
     def _accept(self) -> None:
-        if self._latest_turn:
+        if self._latest_turn and self.accept_button.isEnabled():
             self.accept_requested.emit(self._latest_turn.turn_id, self.review_note.toPlainText())
 
     def _reject(self) -> None:
-        if self._latest_turn:
+        if self._latest_turn and self.reject_button.isEnabled():
             self.reject_requested.emit(self._latest_turn.turn_id, self.review_note.toPlainText())
 
     def _repair(self) -> None:
-        if self._latest_turn:
+        if self._latest_turn and self.repair_button.isEnabled():
             self.repair_requested.emit(
                 self._latest_turn.turn_id,
                 self.review_note.toPlainText(),
@@ -564,10 +740,10 @@ class UnityPanel(QWidget):
                 self.analyze_screenshot.isChecked(),
             )
 
-    def _open_latest(self, kind: str) -> None:
+    def _latest_path(self, kind: str) -> str | None:
         turn = self._latest_turn
         if not turn:
-            return
+            return None
         if kind == "screenshot":
             path = turn.screenshot_paths[-1] if turn.screenshot_paths else None
         elif kind == "receipt":
@@ -575,10 +751,16 @@ class UnityPanel(QWidget):
         elif kind == "scene":
             path = self.job.latest_unity_scene_path if self.job else None
             if path and not Path(path).is_absolute():
-                path = str(Path(self.project_path.text()) / Path(path.replace("/", "\\")))
+                session = next((item for item in self.job.unity_sessions if item.session_id == turn.session_id), None) if self.job else None
+                project = session.project_path if session else (self.job.unity_project_path if self.job else None)
+                path = str(Path(project or self.project_path.text()) / Path(path))
         else:
             path = turn.run_log_path or turn.jsonl_log_path
-        if path:
+        return path
+
+    def _open_latest(self, kind: str) -> None:
+        path = self._latest_path(kind)
+        if path and Path(path).is_file():
             self.open_path_requested.emit(path)
 
     def choose_project(self) -> str:

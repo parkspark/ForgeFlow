@@ -188,6 +188,16 @@ QLabel#title {{
     font-size: 24px;
     font-weight: 600;
 }}
+QLabel#welcomeTitle {{
+    font-size: 24px;
+    font-weight: 600;
+    margin-bottom: 12px;
+}}
+QLabel#workspaceTitle {{
+    font-size: 15px;
+    font-weight: 600;
+}}
+QPushButton:focus {{ border: 2px solid {colors["accent"]}; }}
 QLabel#guidance {{ color: {colors["warning"]}; }}
 QLabel#previewFrame {{
     background: {colors["surface"]};
