@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import os
+import queue
 import subprocess
+import threading
+import time
 from collections.abc import Callable
 
 from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, Signal
@@ -99,6 +102,7 @@ class SyncProcessRunner:
         on_line: Callable[[str, str], None] | None = None,
         timeout: float | None = None,
     ) -> int:
+        deadline = None if timeout is None else time.monotonic() + timeout
         process = subprocess.Popen(
             [command.executable, *command.arguments],
             cwd=command.cwd,
@@ -112,12 +116,60 @@ class SyncProcessRunner:
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
         )
         assert process.stdout is not None
+        output = process.stdout
+        events: queue.Queue[str | BaseException | None] = queue.Queue(maxsize=1024)
+        stopped = threading.Event()
+
+        def enqueue(value: str | BaseException | None) -> None:
+            while not stopped.is_set():
+                try:
+                    events.put(value, timeout=0.1)
+                    return
+                except queue.Full:
+                    continue
+
+        def read_output() -> None:
+            try:
+                for line in output:
+                    if stopped.is_set():
+                        break
+                    enqueue(line)
+            except BaseException as exc:
+                enqueue(exc)
+            finally:
+                enqueue(None)
+
+        def remaining() -> float | None:
+            if deadline is None:
+                return None
+            seconds = deadline - time.monotonic()
+            if seconds <= 0:
+                raise subprocess.TimeoutExpired(process.args, timeout)
+            return seconds
+
+        reader = threading.Thread(target=read_output, name="forgeflow-process-output", daemon=True)
+        reader.start()
         try:
-            for line in process.stdout:
+            while True:
+                try:
+                    line = events.get(timeout=remaining())
+                except queue.Empty:
+                    raise subprocess.TimeoutExpired(process.args, timeout) from None
+                if line is None:
+                    break
+                if isinstance(line, BaseException):
+                    raise line
                 if on_line:
                     on_line("OUT", line.rstrip("\r\n"))
-            return process.wait(timeout=timeout)
+            return process.wait(timeout=remaining())
         except BaseException:
             if process.poll() is None:
                 terminate_process_tree(process)
             raise
+        finally:
+            stopped.set()
+            reader.join(timeout=1)
+            # A descendant can retain the pipe after its parent exits. Never
+            # block cleanup acquiring a TextIOWrapper lock held by that reader.
+            if not reader.is_alive():
+                output.close()

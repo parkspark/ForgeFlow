@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import io
 import json
+import sys
+import threading
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -9,6 +12,7 @@ import pytest
 
 from forgeflow.adapters.unity_adapter import UnityAdapter
 from forgeflow.domain.job import UnitySession, UnityTurn
+from forgeflow.domain.process import ProcessCommand
 from forgeflow.services.job_service import JobService, sha256_file
 
 
@@ -167,13 +171,20 @@ def test_changed_assets_are_ordered_and_deduplicated(tmp_path):
             "event": "tool_result",
             "name": "unity_write_script",
             "arguments": {"path": "Assets/Scripts/Player.cs"},
-            "result": {"paths": ["Assets/Scripts/Player.cs", "Assets/Scenes/Main.unity"]},
+            "result": {"status": "ok", "result": {"written": "Assets/Scripts/Player.cs"}},
         },
         {
             "event": "tool_result",
             "name": "unity_save_scene",
             "arguments": {"path": "Assets/Scenes/Main.unity"},
-            "result": "Assets/Materials/Hero.mat",
+            "result": json.dumps(
+                {"status": "ok", "result": {"saved": True, "scene": "Assets/Scenes/Main.unity"}}
+            ),
+        },
+        {
+            "event": "tool_result",
+            "name": "unity_write_script",
+            "result": {"status": "ok", "result": {"written": "Assets/Scripts/Player.cs"}},
         },
     ]
     audit.write_text("\n".join(json.dumps(event) for event in events), encoding="utf-8")
@@ -181,8 +192,210 @@ def test_changed_assets_are_ordered_and_deduplicated(tmp_path):
     assert UnityAdapter.collect_changed_assets(audit) == [
         "Assets/Scripts/Player.cs",
         "Assets/Scenes/Main.unity",
-        "Assets/Materials/Hero.mat",
     ]
+
+
+@pytest.mark.parametrize("code", [0, 7])
+def test_process_exit_without_completion_fails_active_turn(
+    config, image, unity_project, monkeypatch, code
+):
+    jobs, job, adapter = _adapter(config, image, unity_project)
+    turn = adapter.send_prompt("현재 씬을 분석해줘")
+    monkeypatch.setattr(adapter.process, "wait", lambda: code)
+
+    adapter._wait_process()
+
+    assert turn.status == "failed"
+    assert turn.completed_at and turn.error
+    assert adapter._active_turn is None
+    assert jobs.load(job.job_id).stages["unity"].status == "failed"
+    assert turn.human_review_status == "pending"
+
+
+def test_session_error_fails_active_turn_before_process_exit(
+    config, image, unity_project, monkeypatch
+):
+    jobs, job, adapter = _adapter(config, image, unity_project)
+    turn = adapter.send_prompt("현재 씬을 분석해줘")
+    adapter._handle_event({"type": "session_error", "error": "bridge disconnected"})
+
+    assert turn.status == "failed"
+    assert jobs.load(job.job_id).stages["unity"].error == "bridge disconnected"
+    monkeypatch.setattr(adapter.process, "wait", lambda: 1)
+    adapter._wait_process()
+    adapter._handle_event({"type": "turn_completed", "id": turn.turn_id})
+    assert turn.status == "failed"
+    assert adapter.session.status == "failed"
+    assert adapter._active_turn is None
+
+
+def test_session_closed_without_completion_fails_active_turn(config, image, unity_project):
+    jobs, job, adapter = _adapter(config, image, unity_project)
+    turn = adapter.send_prompt("현재 씬을 분석해줘")
+    adapter._handle_event({"type": "session_closed"})
+    assert turn.status == "failed"
+    assert jobs.load(job.job_id).stages["unity"].status == "failed"
+
+
+def test_process_exit_drains_buffered_completion_before_failing(
+    config, image, unity_project, monkeypatch, qapp
+):
+    _jobs, job, adapter = _adapter(config, image, unity_project)
+    turn = adapter.send_prompt("현재 씬을 분석해줘")
+    process_exited = threading.Event()
+    release_stdout = threading.Event()
+
+    def wait():
+        process_exited.set()
+        return 0
+
+    def read_buffered_completion():
+        if release_stdout.wait(5):
+            adapter._handle_event({"type": "turn_completed", "id": turn.turn_id})
+
+    monkeypatch.setattr(adapter.process, "wait", wait)
+    reader = threading.Thread(target=read_buffered_completion)
+    waiter = threading.Thread(
+        target=adapter._wait_process, args=(adapter.process, adapter.session, reader)
+    )
+    reader.start()
+    waiter.start()
+    try:
+        assert process_exited.wait(5)
+        waiter.join(0.05)
+        assert waiter.is_alive(), "process finalization must wait for buffered stdout"
+        assert turn.status == "running"
+    finally:
+        release_stdout.set()
+        reader.join(5)
+        waiter.join(5)
+    assert not reader.is_alive() and not waiter.is_alive()
+    assert turn.status == "succeeded"
+    assert turn.human_review_status == "pending"
+    assert job.stages["unity"].status == "awaiting_review"
+
+
+@pytest.mark.parametrize("already_exited", [False, True])
+def test_cancel_is_terminal_even_after_process_exit_or_late_completion(
+    config, image, unity_project, monkeypatch, already_exited
+):
+    jobs, job, adapter = _adapter(config, image, unity_project)
+    turn = adapter.send_prompt("새 씬을 만들어줘")
+    if already_exited:
+        adapter.process.returncode = 0
+    monkeypatch.setattr(adapter, "_terminate_tree", lambda process: None)
+
+    adapter.cancel_active()
+    adapter._handle_event({"type": "turn_completed", "id": turn.turn_id})
+    adapter._wait_process()
+
+    assert turn.status == "cancelled"
+    assert adapter._active_turn is None
+    assert jobs.load(job.job_id).stages["unity"].status == "cancelled"
+    assert turn.human_review_status == "pending"
+
+
+@pytest.mark.parametrize("completed", [False, True])
+def test_shutdown_cancels_running_turn_and_preserves_completed_review(
+    config, image, unity_project, completed
+):
+    jobs, job, adapter = _adapter(config, image, unity_project)
+    turn = adapter.send_prompt("새 씬을 만들어줘")
+    if completed:
+        adapter._handle_event({"type": "turn_completed", "id": turn.turn_id})
+
+    adapter.shutdown(wait_seconds=0)
+
+    assert adapter.process is None
+    assert adapter._active_turn is None
+    assert turn.status == ("succeeded" if completed else "cancelled")
+    assert jobs.load(job.job_id).stages["unity"].status == (
+        "awaiting_review" if completed else "cancelled"
+    )
+    assert turn.human_review_status == "pending"
+
+
+def test_previous_session_reader_and_exit_cannot_change_new_session(config, image, unity_project):
+    _jobs, job, adapter = _adapter(config, image, unity_project)
+    old_process, old_session = adapter.process, adapter.session
+    old_turn = adapter.send_prompt("이전 명령")
+    old_process.stdout = io.StringIO(
+        json.dumps({"type": "turn_completed", "id": old_turn.turn_id}) + "\n"
+    )
+    old_turn.status = "cancelled"
+    adapter.process = FakeProcess()
+    adapter.session = UnitySession("session-new", str(unity_project), status="ready")
+    adapter._active_turn = None
+    new_turn = adapter.send_prompt("새 명령")
+
+    adapter._read_stdout(old_process, old_session)
+    adapter._process_finished(old_process, old_session, 1)
+
+    assert new_turn.status == "running"
+    assert adapter._active_turn is new_turn
+    assert adapter.session.status == "ready"
+    assert job.stages["unity"].status == "running"
+
+
+def test_prompt_write_failure_does_not_leave_running_turn(
+    config, image, unity_project, monkeypatch
+):
+    jobs, job, adapter = _adapter(config, image, unity_project)
+
+    def broken_pipe(message):
+        raise BrokenPipeError("agent exited")
+
+    monkeypatch.setattr(adapter, "_send", broken_pipe)
+    with pytest.raises(BrokenPipeError):
+        adapter.send_prompt("현재 씬을 분석해줘")
+    assert adapter.session.status == "failed"
+    assert job.unity_turns[-1].status == "failed"
+    assert jobs.load(job.job_id).stages["unity"].status == "failed"
+    assert adapter._active_turn is None
+
+
+@pytest.mark.parametrize("send_completion", [False, True])
+def test_real_jsonl_process_exit_preserves_completion_or_fails_missing_event(
+    config, image, unity_project, monkeypatch, qapp, send_completion
+):
+    jobs = JobService(config.jobs_root)
+    job = jobs.create("jsonl-process", image)
+    adapter = UnityAdapter(config, jobs)
+    program = "\n".join(
+        [
+            "import json,sys",
+            f"print(json.dumps({{'type':'session_ready','projectPath':{str(unity_project)!r}}}),flush=True)",
+            "message=json.loads(sys.stdin.readline())",
+            (
+                "print(json.dumps({'type':'turn_completed','id':message['id']}),flush=True)"
+                if send_completion
+                else "pass"
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        adapter,
+        "build_session_command",
+        lambda project, session: ProcessCommand(sys.executable, ["-u", "-c", program], project),
+    )
+    try:
+        adapter.start_session(job, unity_project)
+        deadline = time.monotonic() + 5
+        while not adapter.ready and time.monotonic() < deadline:
+            qapp.processEvents()
+            time.sleep(0.01)
+        assert adapter.ready
+        turn = adapter.send_prompt("씬을 분석해줘")
+        for thread in adapter._reader_threads:
+            thread.join(5)
+        assert all(not thread.is_alive() for thread in adapter._reader_threads)
+        assert turn.status == ("succeeded" if send_completion else "failed")
+        assert jobs.load(job.job_id).stages["unity"].status == (
+            "awaiting_review" if send_completion else "failed"
+        )
+        assert turn.human_review_status == "pending"
+    finally:
+        adapter.shutdown()
 
 
 def test_human_accept_and_reject_are_explicit(config, image, unity_project):

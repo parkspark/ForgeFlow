@@ -8,6 +8,7 @@ from pathlib import Path
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
+    QFrame,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -16,6 +17,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSplitter,
     QTabWidget,
     QVBoxLayout,
@@ -73,7 +75,8 @@ class MainWindow(QMainWindow):
 
     def _build_ui(self) -> None:
         self.setWindowTitle("ForgeFlow - 이미지, 3d 모델링, Blender, Unity 통합 워크플로")
-        self.resize(1480, 940)
+        available = self.screen().availableGeometry()
+        self.resize(min(1480, available.width() - 40), min(940, available.height() - 80))
         central = QWidget()
         root = QVBoxLayout(central)
         environment_box = QGroupBox("환경 연결 상태")
@@ -86,8 +89,11 @@ class MainWindow(QMainWindow):
         self.environment_toggle = QPushButton("상세 보기")
         self.environment_toggle.setCheckable(True)
         env_layout.addWidget(self.environment_toggle)
-        self.environment_details = QWidget()
-        detail_layout = QVBoxLayout(self.environment_details)
+        self.environment_details = QScrollArea()
+        self.environment_details.setWidgetResizable(True)
+        self.environment_details.setFrameShape(QFrame.Shape.NoFrame)
+        detail_body = QWidget()
+        detail_layout = QVBoxLayout(detail_body)
         detail_layout.setContentsMargins(0, 0, 0, 0)
         connections = QGridLayout()
         detail_layout.addLayout(connections)
@@ -131,6 +137,9 @@ class MainWindow(QMainWindow):
             widget.setProperty("envState", "checking")
             self.environment_labels[key] = widget
             model_layout.addWidget(widget, 1)
+        self.environment_details.setWidget(detail_body)
+        detail_body.setAutoFillBackground(False)
+        self.environment_details.viewport().setAutoFillBackground(False)
         env_root.addWidget(self.environment_details)
         root.addWidget(environment_box)
         splitter = QSplitter()
@@ -160,11 +169,27 @@ class MainWindow(QMainWindow):
                 button.clicked.connect(
                     lambda checked=False, destination=target: self.go_to_next_step(destination)
                 )
-        self.tabs.addTab(self.modeling_panel, "1. 이미지 → 3D")
-        self.tabs.addTab(self.blender_panel, "2. Blender 자연어 편집")
-        self.tabs.addTab(self.rigging_panel, "3. Humanoid 리깅")
-        self.tabs.addTab(self.unity_panel, "4. Unity 텍스트 컨트롤")
-        self.tabs.addTab(self.log_panel, "실행 로그")
+        # A tab's content may be taller or wider than a laptop's usable area.
+        # Keep the tab bar and running-operation controls outside the scroll
+        # viewport so expanded details never force the window off screen.
+        self.tab_pages = {}
+        for panel, title in (
+            (self.modeling_panel, "1. 이미지 → 3D"),
+            (self.blender_panel, "2. Blender 자연어 편집"),
+            (self.rigging_panel, "3. Humanoid 리깅"),
+            (self.unity_panel, "4. Unity 텍스트 컨트롤"),
+            (self.log_panel, "실행 로그"),
+        ):
+            page = QScrollArea()
+            page.setWidgetResizable(True)
+            page.setFrameShape(QFrame.Shape.NoFrame)
+            page.setWidget(panel)
+            # QScrollArea enables the child's palette fill by default, which
+            # otherwise paints a light background beneath the dark theme.
+            panel.setAutoFillBackground(False)
+            page.viewport().setAutoFillBackground(False)
+            self.tab_pages[panel] = page
+            self.tabs.addTab(page, title)
         work_area = QWidget()
         work_layout = QVBoxLayout(work_area)
         work_layout.setContentsMargins(0, 0, 0, 0)
@@ -178,6 +203,22 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         self.statusBar().showMessage("준비됨")
         self._apply_theme(selected_theme)
+        self._update_detail_heights()
+
+    def _show_panel(self, panel: QWidget) -> None:
+        self.tabs.setCurrentWidget(self.tab_pages[panel])
+
+    def _update_detail_heights(self) -> None:
+        # Reserve room for the working tab on short/high-DPI screens. Details
+        # can scroll independently while the operation/cancel row stays fixed.
+        detail_height = max(60, (self.height() - 400) // 2)
+        self.environment_details.setMaximumHeight(min(140, detail_height))
+        self.progress_panel.log.setMaximumHeight(min(180, detail_height))
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if hasattr(self, "progress_panel"):
+            self._update_detail_heights()
 
     def _connect(self) -> None:
         self.project_panel.new_requested.connect(self.create_job)
@@ -221,7 +262,7 @@ class MainWindow(QMainWindow):
         self.pipeline.job_changed.connect(self._job_changed)
         self.pipeline.inspect_ready.connect(self.blender_panel.set_inspection)
         self.pipeline.plan_ready.connect(
-            lambda _job, _request: self.tabs.setCurrentWidget(self.blender_panel)
+            lambda _job, _request: self._show_panel(self.blender_panel)
         )
         self.pipeline.operation_finished.connect(self._operation_finished)
         self.refresh_environment_button.clicked.connect(self.refresh_environment)
@@ -394,7 +435,7 @@ class MainWindow(QMainWindow):
             "unity": self.unity_panel,
         }
         self._render_job()
-        self.tabs.setCurrentWidget(panels[destination])
+        self._show_panel(panels[destination])
 
     def choose_unity_project(self) -> None:
         self.unity_panel.choose_project()
@@ -408,7 +449,7 @@ class MainWindow(QMainWindow):
         try:
             session = self.unity.start_session(self.current_job, project_path)
             self.unity_panel.set_session(session)
-            self.tabs.setCurrentWidget(self.unity_panel)
+            self._show_panel(self.unity_panel)
             self.statusBar().showMessage(
                 "Unity Agent를 시작했습니다. 프로젝트 identity 확인을 기다리는 중입니다.", 10000
             )
@@ -603,7 +644,7 @@ class MainWindow(QMainWindow):
         try:
             self.rigging_panel.clear_log()
             self.pipeline.start_rigging(self.current_job, selected_input, seed)
-            self.tabs.setCurrentWidget(self.rigging_panel)
+            self._show_panel(self.rigging_panel)
             self._render_job()
         except Exception as exc:
             QMessageBox.critical(self, "자동 리깅 시작 실패", str(exc))
@@ -642,11 +683,11 @@ class MainWindow(QMainWindow):
         self._render_job()
         if success and operation in {"modeling", "blender_plan", "blender", "rigging"}:
             if operation == "modeling":
-                self.tabs.setCurrentWidget(self.modeling_panel)
+                self._show_panel(self.modeling_panel)
             elif operation == "rigging":
-                self.tabs.setCurrentWidget(self.rigging_panel)
+                self._show_panel(self.rigging_panel)
             else:
-                self.tabs.setCurrentWidget(self.blender_panel)
+                self._show_panel(self.blender_panel)
         if not success and operation not in {"blender_plan"}:
             QMessageBox.warning(self, "실행 결과", message)
 

@@ -60,15 +60,25 @@ class PipelineService(QObject):
     def start_modeling(self, job: Job) -> None:
         if self.busy:
             raise RuntimeError("다른 작업이 실행 중입니다.")
-        releases = self.modeling.build_release_ollama()
         if job.stages["modeling"].status == "completed":
             raise RuntimeError("완료된 모델링 원본은 덮어쓸 수 없습니다.")
-        command, run_root = self.modeling.build_generation(job)
+        originals = self.modeling.existing_generation(job)
         log_path = (
             self.jobs.job_directory(job.job_id)
             / "logs"
             / f"modeling-attempt-{job.stages['modeling'].attempts + 1:03d}.log"
         )
+        if originals:
+            if not job.blender_input_path:
+                job.blender_input_path = next(item.path for item in originals if item.kind == "glb")
+            self.jobs.set_stage(job, "modeling", "running", log_path=log_path)
+            self.log_received.emit(
+                "[복구] 검증된 모델링 원본을 보존하고 미리보기만 다시 생성합니다."
+            )
+            self._start_modeling_preview(job, log_path)
+            return
+        releases = self.modeling.build_release_ollama()
+        command, run_root = self.modeling.build_generation(job)
         self.jobs.set_stage(job, "modeling", "running", log_path=log_path)
         self._release_models(
             job,
@@ -112,12 +122,18 @@ class PipelineService(QObject):
             self.jobs.add_artifacts(job, artifacts, save=False)
             job.blender_input_path = next(item.path for item in artifacts if item.kind == "glb")
             self.jobs.save(job)
+            self._start_modeling_preview(job, self._log_path)
+        except Exception as exc:
+            self._fail_stage(job, "modeling", str(exc))
+
+    def _start_modeling_preview(self, job: Job, log_path: Path | None) -> None:
+        try:
             command, preview = self.modeling.build_preview(job)
             self._begin(
                 job,
                 "modeling_preview",
                 command,
-                self._log_path,
+                log_path,
                 lambda code: self._preview_finished(job, preview, code),
             )
         except Exception as exc:
@@ -125,6 +141,8 @@ class PipelineService(QObject):
 
     def _preview_finished(self, job: Job, preview: Path, exit_code: int) -> None:
         try:
+            if self.modeling.existing_generation(job) is None:
+                raise RuntimeError("모델링 원본 검증에 실패했습니다.")
             if exit_code != 0:
                 raise RuntimeError(f"3D 미리보기 생성이 종료 코드 {exit_code}로 실패했습니다.")
             self.modeling.verify_artifacts([preview])

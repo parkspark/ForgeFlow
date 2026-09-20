@@ -202,7 +202,13 @@ python -u .\scripts\e2e\run_rigging_e2e.py --asset "C:\absolute\humanoid.glb" --
 python -u .\scripts\e2e\run_unity_e2e.py --project "C:\absolute\UnityProject" --job-id <job-id>
 ```
 
-리깅 E2E는 반드시 ForgeFlow `RiggingAdapter`와 동일 검증 로직을 사용하며 `logs/rigging-e2e-evidence.json`에 입력 전후 해시, Seed, UniRig commit, 실행 시간/종료 코드, 모든 산출물 절대 경로·해시, report 핵심 값, 미리보기와 최종 판정을 기록합니다.
+E2E는 저장된 앱 설정을 사용합니다. 테스트 작업을 분리하려면 각 명령에 `--jobs-root "C:\absolute\e2e-jobs"`를 지정합니다. `run_full_e2e.py`의 범위는 이미지 생성부터 Blender 편집까지이며, 리깅과 Unity는 위의 후속 명령으로 검증합니다.
+
+실패하거나 제한 시간을 초과해도 부분 로그와 evidence를 남기며, 종료 시 출력하는 `EVIDENCE=` 경로에서 결과를 확인할 수 있습니다. 리깅은 ForgeFlow `RiggingAdapter`와 동일 검증 로직을 사용하고 입력 전후 해시, Seed, UniRig commit, 실행 시간/종료 코드, 산출물 경로·해시, report와 미리보기 판정을 기록합니다. 리깅 실행과 미리보기의 제한 시간은 `--timeout`, `--preview-timeout`으로 조정합니다.
+
+Unity E2E의 씬 생성·FBX 배치는 Turn 성공과 자동 검증 `verified`를 모두 요구합니다. 조회 전용 요청은 자동 검증이 없어도 실행 결과를 확인할 수 있고, 인간 검토 상태는 항상 `pending`으로 남깁니다. FBX 직접 배치 도구와 컴파일 진단을 사용하려면 함께 수정된 `unity_local_mcp`, `unity_mcp`와 `unity_mcp/UnityBridge/UnityMcpBridge.cs`가 필요합니다. 기존 Unity 프로젝트의 `Assets/Editor/`에 설치된 Bridge도 해당 소스로 갱신해야 합니다.
+
+2026-09-19 점검과 개선 근거: [E2E 점검](docs/e2e-audit-2026-09-19.md), [개선 및 재검증](docs/e2e-improvements-2026-09-19.md), [Unity MCP 강화](docs/unity-mcp-hardening-2026-09-19.md).
 
 ## 현재 제한
 

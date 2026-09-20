@@ -39,6 +39,15 @@ def build_effective_prompt(
             f"- Selected Humanoid FBX (exact required path): {job.unity_asset_path}\n"
             f"- Rig report: {rig_status(job)}\n"
             "- Use this exact selected FBX. Do not search for or substitute another version."
+            "\n- Place the FBX in EDIT mode with unity_instantiate_prefab when available. "
+            "Use its returned renderer bounds to center the whole character with margins, "
+            "filling about 60–75% of the image height, then save the scene. "
+            "Do not create runtime placement scripts or use a C# type named Model."
+            "\n- A Unity camera with rotation [0, 0, 0] looks along +Z. For that view, "
+            "put the camera at [bounds.center.x, bounds.center.y, bounds.center.z - distance], "
+            "not on the positive-Z side. Derive the positive distance from the bounds, "
+            "Camera fieldOfView and aspect ratio so both height and width fit. "
+            "Confirm the character is in front of the camera before taking a screenshot."
         )
     scene = job.latest_unity_scene_path if include_current_scene else None
     parts = [

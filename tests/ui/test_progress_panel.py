@@ -29,7 +29,7 @@ def test_start_stays_on_modeling_tab_and_cancel_reaches_pipeline(config, image, 
     window = MainWindow(config, run_environment_checks=False)
     try:
         window.current_job = window.jobs.create("진행 테스트", image)
-        window.tabs.setCurrentWidget(window.modeling_panel)
+        window._show_panel(window.modeling_panel)
         cancelled = []
 
         def start(job):
@@ -46,7 +46,7 @@ def test_start_stays_on_modeling_tab_and_cancel_reaches_pipeline(config, image, 
         monkeypatch.setattr(type(window.pipeline.process), "running", property(lambda self: False))
         window.pipeline._cancelled = False
         window.start_modeling()
-        assert window.tabs.currentWidget() is window.modeling_panel
+        assert window.tabs.currentWidget().widget() is window.modeling_panel
         window.pipeline.operation_finished.emit("modeling", True, "완료")
         assert not window.progress_panel.active
     finally:

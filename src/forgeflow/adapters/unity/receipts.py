@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,8 @@ def parse_receipt(path: str | Path | None) -> dict[str, Any]:
     try:
         payload = json.loads(receipt.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, TypeError):
+        return {"automated_status": "unavailable"}
+    if not isinstance(payload, dict):
         return {"automated_status": "unavailable"}
     requested = _receipt_lists(payload, "requested_checks")
     measured = _receipt_lists(payload, "measured_checks")
@@ -46,44 +49,52 @@ def parse_receipt(path: str | Path | None) -> dict[str, Any]:
 
 
 def collect_changed_assets(jsonl_path: str | Path | None) -> list[str]:
-    """Extract project-relative assets from mutation tool audit records."""
+    """Collect explicit file outputs from successful mutation tool results.
+
+    Arguments can contain source assets, C# code and rejected destinations.
+    Only the tool's structured output fields identify files it actually changed.
+    Scene-object mutations are represented when the scene is saved, not by
+    GameObject hierarchy paths that happen to start with ``Assets/``.
+    """
     if not jsonl_path:
         return []
     path = Path(jsonl_path)
-    mutations = {
-        "unity_create_gameobject",
-        "unity_create_gameobjects",
-        "unity_modify_gameobject",
-        "unity_delete_gameobject",
-        "unity_add_component",
-        "unity_remove_component",
-        "unity_set_component_property",
-        "unity_create_material",
-        "unity_create_scene",
-        "unity_open_scene",
-        "unity_save_scene",
-        "unity_write_script",
-        "unity_delete_script",
-        "unity_write_level",
+    output_fields = {
+        "unity_create_material": {"assetPath": ".mat"},
+        "unity_create_scene": {"path": ".unity", "recoveryPath": ".unity"},
+        "unity_instantiate_prefab": {"scenePath": ".unity"},
+        "unity_save_scene": {"scene": ".unity"},
+        "unity_write_script": {"written": ".cs"},
+        "unity_delete_script": {"deleted": ".cs"},
+        "unity_install_level_loader": {"written": ".cs"},
+        "unity_write_level": {"written": ".json"},
     }
     found: list[str] = []
     seen: set[str] = set()
 
-    def walk(node: Any) -> None:
-        if isinstance(node, str):
-            normalized = node.replace("\\", "/")
-            start = normalized.find("Assets/")
-            if start >= 0:
-                candidate = normalized[start:].split("\n", 1)[0].strip(" \"'")
-                if candidate and candidate not in seen:
-                    seen.add(candidate)
-                    found.append(candidate)
-        elif isinstance(node, dict):
-            for child in node.values():
-                walk(child)
-        elif isinstance(node, list):
-            for child in node:
-                walk(child)
+    def add_path(value: Any, suffix: str) -> None:
+        if not isinstance(value, str):
+            return
+        normalized = value.replace("\\", "/")
+        if normalized.startswith("Assets/"):
+            candidate = normalized
+        elif normalized.startswith("/") or re.match(r"^[A-Za-z]:/", normalized):
+            marker = normalized.find("/Assets/")
+            if marker < 0:
+                return
+            candidate = normalized[marker + 1 :]
+        else:
+            return
+        if (
+            any(char in candidate for char in '\r\n\t"<>|?*:')
+            or any(part in {"", ".", ".."} for part in candidate.split("/"))
+            or not candidate.lower().endswith(suffix)
+        ):
+            return
+        key = candidate.casefold()
+        if key not in seen:
+            seen.add(key)
+            found.append(candidate)
 
     try:
         with path.open(encoding="utf-8") as handle:
@@ -92,17 +103,26 @@ def collect_changed_assets(jsonl_path: str | Path | None) -> list[str]:
                     event = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if event.get("event") != "tool_result" or event.get("name") not in mutations:
+                if not isinstance(event, dict) or event.get("event") != "tool_result":
                     continue
-                walk(event.get("arguments"))
+                fields = output_fields.get(event.get("name"))
+                if fields is None:
+                    continue
                 result = event.get("result")
                 if isinstance(result, str):
                     try:
-                        walk(json.loads(result))
+                        result = json.loads(result)
                     except json.JSONDecodeError:
-                        walk(result)
-                else:
-                    walk(result)
+                        continue
+                if not isinstance(result, dict) or result.get("status") != "ok":
+                    continue
+                payload = result.get("result")
+                if not isinstance(payload, dict):
+                    continue
+                if event.get("name") == "unity_save_scene" and payload.get("saved") is not True:
+                    continue
+                for field, suffix in fields.items():
+                    add_path(payload.get(field), suffix)
     except OSError:
         return []
     return found

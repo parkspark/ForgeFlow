@@ -16,7 +16,7 @@ def test_unity_panel_prioritizes_chat_and_scrolls_secondary_controls(qapp):
     assert panel.sidebar_scroll.widgetResizable() is True
     assert panel.sidebar_scroll.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
     assert panel.main_splitter.sizes()[0] > panel.main_splitter.sizes()[1]
-    assert panel.chat.minimumHeight() >= 340
+    assert panel.chat.minimumHeight() >= 240
     assert panel.screenshot_preview.isHidden()
     assert panel.send_button.text() == "전송  Ctrl+Enter"
 

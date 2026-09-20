@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import threading
+import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Callable
@@ -172,8 +173,13 @@ class UnityAdapter(QObject):
 
     def start_session(self, job: Job, project_path: str | Path) -> UnitySession:
         project = self.validate_project(project_path)
-        if self.running:
-            if self.session and same_path(self.session.project_path, project):
+        if self.process is not None:
+            if (
+                self.ready
+                and self.job is not None
+                and self.job.job_id == job.job_id
+                and same_path(self.session.project_path, project)
+            ):
                 return self.session
             self.shutdown(wait_seconds=5)
         session_id = f"session-{utc_now().replace(':', '').replace('-', '')[:15]}-{uuid4().hex[:8]}"
@@ -192,11 +198,11 @@ class UnityAdapter(QObject):
         )
         job.unity_project_path = str(project)
         self.jobs.add_unity_session(job, self.session)
-        command = self.build_session_command(project, session_dir)
         creationflags = 0
         if os.name == "nt":
             creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
         try:
+            command = self.build_session_command(project, session_dir)
             self.process = self._process_factory(
                 [command.executable, *command.arguments],
                 cwd=command.cwd,
@@ -219,10 +225,21 @@ class UnityAdapter(QObject):
             self.process = None
             raise
         self._cancel_requested = False
+        process, session = self.process, self.session
+        stdout_thread = threading.Thread(
+            target=self._read_stdout, args=(process, session), name="unity-jsonl", daemon=True
+        )
         self._reader_threads = [
-            threading.Thread(target=self._read_stdout, name="unity-jsonl", daemon=True),
-            threading.Thread(target=self._read_stderr, name="unity-stderr", daemon=True),
-            threading.Thread(target=self._wait_process, name="unity-wait", daemon=True),
+            stdout_thread,
+            threading.Thread(
+                target=self._read_stderr, args=(process, session), name="unity-stderr", daemon=True
+            ),
+            threading.Thread(
+                target=self._wait_process,
+                args=(process, session, stdout_thread),
+                name="unity-wait",
+                daemon=True,
+            ),
         ]
         for thread in self._reader_threads:
             thread.start()
@@ -236,8 +253,9 @@ class UnityAdapter(QObject):
             raise ValueError("JSONL 이벤트에는 문자열 type이 필요합니다.")
         return value
 
-    def _read_stdout(self) -> None:
-        process = self.process
+    def _read_stdout(self, process=None, session=None) -> None:
+        process = process if process is not None else self.process
+        session = session if session is not None else self.session
         if process is None or process.stdout is None:
             return
         for line in process.stdout:
@@ -249,25 +267,32 @@ class UnityAdapter(QObject):
             except (json.JSONDecodeError, ValueError) as exc:
                 self.protocol_error.emit(f"Unity Agent stdout JSONL 오류: {exc}: {stripped[:300]}")
                 continue
-            self._record_event(stripped)
-            self._handle_event(event)
+            with self._state_lock:
+                if process is not self.process or session is not self.session:
+                    return
+                self._record_event(stripped)
+                self._handle_event(event)
 
-    def _read_stderr(self) -> None:
-        process = self.process
+    def _read_stderr(self, process=None, session=None) -> None:
+        process = process if process is not None else self.process
+        session = session if session is not None else self.session
         if process is None or process.stderr is None:
             return
         for line in process.stderr:
             text = line.rstrip("\r\n")
-            self.log_received.emit(text)
-            if self._stderr_log:
-                self._stderr_log.parent.mkdir(parents=True, exist_ok=True)
-                with self._stderr_log.open("a", encoding="utf-8") as handle:
-                    handle.write(text + "\n")
-            turn = self._active_turn
-            if turn and self._session_dir:
-                path = self._session_dir / "turns" / turn.turn_id / "agent.log"
-                with path.open("a", encoding="utf-8") as handle:
-                    handle.write(text + "\n")
+            with self._state_lock:
+                if process is not self.process or session is not self.session:
+                    return
+                self.log_received.emit(text)
+                if self._stderr_log:
+                    self._stderr_log.parent.mkdir(parents=True, exist_ok=True)
+                    with self._stderr_log.open("a", encoding="utf-8") as handle:
+                        handle.write(text + "\n")
+                turn = self._active_turn
+                if turn and self._session_dir:
+                    path = self._session_dir / "turns" / turn.turn_id / "agent.log"
+                    with path.open("a", encoding="utf-8") as handle:
+                        handle.write(text + "\n")
 
     def _record_event(self, line: str) -> None:
         if self._session_log:
@@ -284,6 +309,10 @@ class UnityAdapter(QObject):
         with self._state_lock:
             event_type = event["type"]
             if event_type == "session_ready":
+                if self._cancel_requested or (
+                    self.session and self.session.status in {"closed", "failed"}
+                ):
+                    return
                 actual = str(event.get("projectPath") or "")
                 if (
                     not self.session
@@ -347,7 +376,9 @@ class UnityAdapter(QObject):
                     self._finish_turn(turn, event, success=False)
             elif event_type == "session_closed":
                 if self.session:
-                    self.session.status = "closed"
+                    self._end_active_turn("failed", "Unity 세션이 명령 완료 전에 닫혔습니다.")
+                    if self.session.status != "failed":
+                        self.session.status = "closed"
                     self.session.closed_at = utc_now()
                     self._save_job()
                     self.session_changed.emit(self.session)
@@ -362,6 +393,26 @@ class UnityAdapter(QObject):
         repair_existing: bool = False,
         analyze_screenshot: bool = False,
         human_review_feedback: str | None = None,
+    ) -> UnityTurn:
+        with self._state_lock:
+            return self._send_prompt(
+                user_text,
+                include_asset=include_asset,
+                include_current_scene=include_current_scene,
+                repair_existing=repair_existing,
+                analyze_screenshot=analyze_screenshot,
+                human_review_feedback=human_review_feedback,
+            )
+
+    def _send_prompt(
+        self,
+        user_text: str,
+        *,
+        include_asset: bool,
+        include_current_scene: bool,
+        repair_existing: bool,
+        analyze_screenshot: bool,
+        human_review_feedback: str | None,
     ) -> UnityTurn:
         if not self.ready or self.job is None or self.session is None or self._session_dir is None:
             raise RuntimeError("Unity Agent 세션이 준비되지 않았습니다.")
@@ -397,28 +448,29 @@ class UnityAdapter(QObject):
         self._active_turn = turn
         self.jobs.set_stage(self.job, "unity", "running")
         self.job_changed.emit(self.job)
-        self._send(
-            {
-                "type": "prompt",
-                "id": turn_id,
-                "text": effective,
-                "user_text": exact_text,
-                "repair_existing": repair_existing,
-                "analyze_screenshot": analyze_screenshot,
-                "human_review_feedback": human_review_feedback,
-                "selected_asset_paths": (
-                    [self.job.unity_asset_path]
-                    if include_asset and self.job.unity_asset_path
-                    else []
-                ),
-                "preferred_output_root": (
-                    f"Assets/ForgeFlow/{_safe_job_id(self.job.job_id)}/"
-                    if include_asset
-                    and not re.search(r"Assets[/\\][^\r\n]*?\.unity\b", exact_text, re.I)
-                    else None
-                ),
-            }
-        )
+        message = {
+            "type": "prompt",
+            "id": turn_id,
+            "text": effective,
+            "user_text": exact_text,
+            "repair_existing": repair_existing,
+            "analyze_screenshot": analyze_screenshot,
+            "human_review_feedback": human_review_feedback,
+            "selected_asset_paths": (
+                [self.job.unity_asset_path] if include_asset and self.job.unity_asset_path else []
+            ),
+            "preferred_output_root": (
+                f"Assets/ForgeFlow/{_safe_job_id(self.job.job_id)}/"
+                if include_asset
+                and not re.search(r"Assets[/\\][^\r\n]*?\.unity\b", exact_text, re.I)
+                else None
+            ),
+        }
+        try:
+            self._send(message)
+        except (OSError, RuntimeError) as exc:
+            self._fail_session(f"Unity 명령을 전송할 수 없습니다: {exc}")
+            raise
         return turn
 
     def _send(self, message: dict[str, Any]) -> None:
@@ -440,6 +492,10 @@ class UnityAdapter(QObject):
         return collect_changed_assets(jsonl_path)
 
     def _finish_turn(self, turn: UnityTurn, event: dict[str, Any], *, success: bool) -> None:
+        # Cancellation and transport failures are terminal even if a buffered
+        # completion arrives after the user has stopped the operation.
+        if turn.status != "running":
+            return
         turn.completed_at = utc_now()
         turn.status = "succeeded" if success else "failed"
         turn.error = None if success else str(event.get("error") or "Unity Agent failed")
@@ -536,25 +592,23 @@ class UnityAdapter(QObject):
         )
 
     def cancel_active(self) -> None:
-        process = self.process
-        if process is None or process.poll() is not None:
-            return
-        self._cancel_requested = True
-        if self._active_turn and self.job:
-            self._active_turn.status = "cancelled"
-            self._active_turn.completed_at = utc_now()
-            self._active_turn.error = "사용자가 Unity 명령을 취소했습니다."
-            self.jobs.set_stage(self.job, "unity", "cancelled", error=self._active_turn.error)
-            self.job_changed.emit(self.job)
-            self._active_turn = None
-        self._terminate_tree(process)
+        with self._state_lock:
+            process = self.process
+            self._cancel_requested = True
+            self._end_active_turn("cancelled", "사용자가 Unity 명령을 취소했습니다.")
+        if process is not None and process.poll() is None:
+            self._terminate_tree(process)
 
     @staticmethod
     def _terminate_tree(process: subprocess.Popen) -> None:
         terminate_process_tree(process)
 
     def shutdown(self, *, wait_seconds: float = 5) -> None:
-        process = self.process
+        with self._state_lock:
+            process, session = self.process, self.session
+            if self._active_turn:
+                self._cancel_requested = True
+                self._end_active_turn("cancelled", "Unity 세션을 닫아 명령이 취소되었습니다.")
         if process is None:
             return
         if process.poll() is None:
@@ -563,12 +617,15 @@ class UnityAdapter(QObject):
                 process.wait(timeout=wait_seconds)
             except (BrokenPipeError, OSError, RuntimeError, subprocess.TimeoutExpired):
                 self._terminate_tree(process)
-        if self.session and self.session.status not in {"closed", "failed"}:
-            self.session.status = "closed"
-            self.session.closed_at = utc_now()
-            self._save_job()
-            self.session_changed.emit(self.session)
-        self.process = None
+        # Readers must finish before another session replaces their job/log paths.
+        deadline = time.monotonic() + wait_seconds
+        for thread in self._reader_threads:
+            if thread is not threading.current_thread() and thread.is_alive():
+                thread.join(max(0, deadline - time.monotonic()))
+        self._process_finished(process, session, process.poll())
+        with self._state_lock:
+            if self.process is process:
+                self.process = None
 
     def build_prompt_file_command(
         self,
@@ -591,37 +648,53 @@ class UnityAdapter(QObject):
             args.append("--vision")
         return ProcessCommand(command.executable, args, command.cwd, command.environment)
 
-    def _wait_process(self) -> None:
-        process = self.process
+    def _wait_process(self, process=None, session=None, stdout_thread=None) -> None:
+        process = process if process is not None else self.process
+        session = session if session is not None else self.session
         if process is None:
             return
         code = process.wait()
+        if stdout_thread is not None:
+            # wait() can finish while turn_completed is still buffered in stdout.
+            # Bound draining in case a descendant keeps the inherited pipe open.
+            stdout_thread.join(timeout=5)
+        self._process_finished(process, session, code)
+
+    def _process_finished(self, process, session, code: int | None) -> None:
         with self._state_lock:
-            if self.session and self.session.status not in {"closed", "failed"}:
-                if self._cancel_requested:
-                    self.session.status = "closed"
-                elif code == 0:
-                    self.session.status = "closed"
-                else:
-                    self.session.status = "failed"
-                    self.session.error = (
-                        f"Unity Agent 프로세스가 종료 코드 {code}로 종료되었습니다."
-                    )
-                    if self._active_turn and self.job:
-                        self._active_turn.status = "failed"
-                        self._active_turn.error = self.session.error
-                        self._active_turn.completed_at = utc_now()
-                        self.jobs.set_stage(self.job, "unity", "failed", error=self.session.error)
-                        self._active_turn = None
-                self.session.closed_at = utc_now()
-                self._save_job()
-                self.session_changed.emit(self.session)
+            if process is not self.process or session is not self.session or session is None:
+                return
+            message = session.error or (
+                f"Unity Agent가 명령 완료 전에 종료되었습니다 (종료 코드 {code})."
+            )
+            self._end_active_turn("cancelled" if self._cancel_requested else "failed", message)
+            if session.status != "failed":
+                session.status = "closed" if self._cancel_requested or code == 0 else "failed"
+                if session.status == "failed":
+                    session.error = message
+            session.closed_at = session.closed_at or utc_now()
+            self._save_job()
+            self.session_changed.emit(session)
+
+    def _end_active_turn(self, status: str, message: str) -> None:
+        turn = self._active_turn
+        if turn is None:
+            return
+        if turn.status == "running":
+            turn.status = status
+            turn.completed_at = utc_now()
+            turn.error = message
+            if self.job:
+                self.jobs.set_stage(self.job, "unity", status, error=message)
+                self.job_changed.emit(self.job)
+        self._active_turn = None
 
     def _fail_session(self, message: str) -> None:
         if self.session:
             self.session.status = "failed"
             self.session.error = message
             self.session.closed_at = utc_now()
+        self._end_active_turn("failed", message)
         self._save_job()
         self.protocol_error.emit(message)
         if self.session:

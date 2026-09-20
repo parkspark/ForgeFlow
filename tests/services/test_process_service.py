@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import ctypes
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
+
+import pytest
 
 from forgeflow.domain.process import ProcessCommand
 from forgeflow.services.job_service import JobService
@@ -22,6 +25,48 @@ def test_external_process_failure_is_preserved(tmp_path: Path):
     )
     assert code == 7
     assert lines == [("OUT", "engine failed")]
+
+
+@pytest.mark.parametrize(
+    "script",
+    [
+        "import time; time.sleep(5)",
+        "import sys,time; sys.stdout.write('partial'); sys.stdout.flush(); time.sleep(5)",
+        "import time\nend=time.monotonic()+5\n"
+        "while time.monotonic()<end:\n print('still running', flush=True)\n time.sleep(.01)",
+    ],
+    ids=["silent", "no-newline", "continuous-output"],
+)
+def test_sync_timeout_covers_output_reading(tmp_path, monkeypatch, script):
+    started = []
+    popen = subprocess.Popen
+
+    def record_process(*args, **kwargs):
+        process = popen(*args, **kwargs)
+        started.append(process)
+        return process
+
+    monkeypatch.setattr(subprocess, "Popen", record_process)
+    began = time.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired) as failure:
+        SyncProcessRunner().run(
+            ProcessCommand(sys.executable, ["-c", script], tmp_path), timeout=0.25
+        )
+    assert failure.value.timeout == 0.25
+    assert time.monotonic() - began < 3.5
+    assert started[0].poll() is not None
+
+
+def test_sync_runner_delivers_utf8_and_trailing_partial_line(tmp_path):
+    lines = []
+    script = "import sys; sys.stdout.buffer.write('첫 줄\\n마지막 줄'.encode('utf-8'))"
+    code = SyncProcessRunner().run(
+        ProcessCommand(sys.executable, ["-c", script], tmp_path),
+        lambda channel, line: lines.append((channel, line)),
+        timeout=5,
+    )
+    assert code == 0
+    assert lines == [("OUT", "첫 줄"), ("OUT", "마지막 줄")]
 
 
 def test_pipeline_reuses_one_buffered_log_handle(tmp_path: Path):

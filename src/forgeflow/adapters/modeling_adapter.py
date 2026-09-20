@@ -44,6 +44,8 @@ class ModelingAdapter:
         return commands
 
     def build_generation(self, job: Job) -> tuple[ProcessCommand, Path]:
+        if self.existing_generation(job):
+            raise RuntimeError("기존 원본 산출물은 보존됩니다. 미리보기만 재시도하세요.")
         image = self.jobs.validate_image(job.input_image_path)
         script = self.config.modeling_root / "scripts" / "generate_model.ps1"
         if not script.is_file():
@@ -77,11 +79,13 @@ class ModelingAdapter:
         expected = {kind: source_dir / f"source.{kind}" for kind in self.REQUIRED}
         self.verify_artifacts(expected.values())
         final_dir = self.jobs.job_directory(job.job_id) / "modeling"
-        artifacts: list[Artifact] = []
-        for kind, source in expected.items():
+        for kind in self.REQUIRED:
             destination = final_dir / f"source.{kind}"
             if destination.exists():
                 raise RuntimeError(f"기존 원본 산출물을 덮어쓸 수 없습니다: {destination}")
+        artifacts: list[Artifact] = []
+        for kind, source in expected.items():
+            destination = final_dir / f"source.{kind}"
             temporary = destination.with_suffix(destination.suffix + ".tmp")
             shutil.copy2(source, temporary)
             os.replace(temporary, destination)
@@ -96,7 +100,39 @@ class ModelingAdapter:
             )
         return artifacts
 
+    def existing_generation(self, job: Job) -> list[Artifact] | None:
+        """Only a complete, registered and unchanged original set is resumable."""
+        directory = self.jobs.job_directory(job.job_id)
+        expected = {kind: directory / "modeling" / f"source.{kind}" for kind in self.REQUIRED}
+        originals = [
+            item
+            for item in job.artifacts
+            if item.stage == "modeling" and item.kind in self.REQUIRED
+        ]
+        if not originals and not any(
+            path.exists() or path.is_symlink() for path in expected.values()
+        ):
+            return None
+        validated = []
+        for kind, path in expected.items():
+            matches = [item for item in originals if item.kind == kind]
+            if len(matches) != 1:
+                raise RuntimeError(
+                    f"모델링 원본 {kind.upper()} 등록이 불완전합니다. 기존 파일을 보존하고 새 작업을 만드세요."
+                )
+            artifact = matches[0]
+            resolved = path.resolve()
+            if not resolved.is_relative_to(directory) or Path(artifact.path).resolve() != resolved:
+                raise RuntimeError(f"모델링 원본 경로가 일치하지 않습니다: {kind.upper()}")
+            self.verify_artifacts([path])
+            if not artifact.sha256 or sha256_file(path) != artifact.sha256:
+                raise RuntimeError(f"모델링 원본 SHA-256 검증에 실패했습니다: {kind.upper()}")
+            validated.append(artifact)
+        return validated
+
     def build_preview(self, job: Job) -> tuple[ProcessCommand, Path]:
+        if self.existing_generation(job) is None:
+            raise RuntimeError("미리보기를 생성할 검증된 모델링 원본이 없습니다.")
         directory = self.jobs.job_directory(job.job_id)
         input_glb = directory / "modeling" / "source.glb"
         output = directory / "modeling" / "preview.png"
