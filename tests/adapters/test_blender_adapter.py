@@ -114,3 +114,58 @@ def test_execution_artifacts_and_source_immutability(config, image):
     source.write_bytes(b"tampered")
     with pytest.raises(RuntimeError, match="원본 파일 해시"):
         BlenderAdapter(config, jobs).collect_execution(request, execution, original)
+
+
+@pytest.mark.parametrize("failure", ["missing_python", "input_hash"])
+def test_proposal_preparation_failure_does_not_reserve_version(config, image, monkeypatch, failure):
+    jobs = JobService(config.jobs_root)
+    job = jobs.create("retry preparation", image)
+    root = jobs.job_directory(job.job_id)
+    source = root / "modeling" / "source.blend"
+    source.write_bytes(b"original Blender input")
+    job.blender_input_path = str(source)
+    config.agent_python.parent.mkdir(parents=True)
+    config.agent_python.touch()
+    adapter = BlenderAdapter(config, jobs)
+
+    def failed_hash(_path):
+        raise PermissionError("input hash unavailable")
+
+    with monkeypatch.context() as patch:
+        if failure == "missing_python":
+            config.agent_python.unlink()
+        else:
+            patch.setattr("forgeflow.adapters.blender_adapter.sha256_file", failed_hash)
+        with pytest.raises((ValueError, PermissionError)):
+            adapter.build_proposal(job, "색상 수정")
+
+    assert not list((root / "blender").iterdir())
+    assert not job.blender_requests
+    config.agent_python.touch()
+    _command, request = adapter.build_proposal(job, "색상 수정")
+    assert request.version == 1
+    assert Path(request.output_directory).is_dir()
+
+
+def test_proposal_skips_empty_and_nonempty_orphan_version_folders(config, image):
+    jobs = JobService(config.jobs_root)
+    job = jobs.create("preserve orphan versions", image)
+    root = jobs.job_directory(job.job_id)
+    source = root / "modeling" / "source.blend"
+    source.write_bytes(b"original Blender input")
+    job.blender_input_path = str(source)
+    config.agent_python.parent.mkdir(parents=True)
+    config.agent_python.touch()
+    empty = root / "blender" / "v001"
+    occupied = root / "blender" / "v002"
+    empty.mkdir()
+    occupied.mkdir()
+    old_log = occupied / "planning.log"
+    old_log.write_bytes(b"old orphan diagnostics")
+
+    _command, request = BlenderAdapter(config, jobs).build_proposal(job, "색상 수정")
+
+    assert request.version == 3
+    assert Path(request.output_directory).name == "v003"
+    assert empty.is_dir() and not list(empty.iterdir())
+    assert old_log.read_bytes() == b"old orphan diagnostics"

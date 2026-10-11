@@ -53,17 +53,25 @@ def bridge_panel(metadata=None) -> UnityPanel:
     job = make_job()
     job.unity_asset_path = "Assets/ForgeFlow/job-unity/Models/v001/Character.fbx"
     panel.set_job(job)
-    panel.set_session(UnitySession(
-        "session-001", "C:/UnityProject", status="ready", project_identity=metadata,
-    ))
+    panel.set_session(
+        UnitySession(
+            "session-001",
+            "C:/UnityProject",
+            status="ready",
+            project_identity=metadata,
+        )
+    )
     return panel
 
 
-@pytest.mark.parametrize("metadata", [
-    None,
-    {"bridgeVersion": "0.5.0", "supportedTools": list(REQUIRED_ANIMATION_TOOLS)},
-    {"bridgeVersion": "0.6.0", "supportedTools": []},
-])
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        None,
+        {"bridgeVersion": "0.5.0", "supportedTools": list(REQUIRED_ANIMATION_TOOLS)},
+        {"bridgeVersion": "0.6.0", "supportedTools": []},
+    ],
+)
 def test_legacy_or_incompatible_bridge_disables_presets_without_blocking_chat(qapp, metadata):
     panel = bridge_panel(metadata)
     assert not panel.avatar_preset.isEnabled()
@@ -85,9 +93,12 @@ def test_legacy_or_incompatible_bridge_disables_presets_without_blocking_chat(qa
 
 
 def test_modern_bridge_shows_ready_groups_and_presets_respect_busy_and_asset_state(qapp):
-    panel = bridge_panel({
-        "bridgeVersion": "0.6.0", "supportedTools": [*REQUIRED_ANIMATION_TOOLS, *FRAMING_TOOLS],
-    })
+    panel = bridge_panel(
+        {
+            "bridgeVersion": "0.6.0",
+            "supportedTools": [*REQUIRED_ANIMATION_TOOLS, *FRAMING_TOOLS],
+        }
+    )
     assert "Avatar: 준비 · Clip: 준비 · Controller: 준비" == panel.bridge_tools_status.text()
     assert panel.bridge_guidance.isHidden()
     for preset in (panel.avatar_preset, panel.animation_preset, panel.scene_preset):
@@ -107,12 +118,17 @@ def test_modern_bridge_shows_ready_groups_and_presets_respect_busy_and_asset_sta
 
 def test_partial_tools_show_exact_missing_tool_and_actual_install_path(qapp):
     installed = "C:/UnityProject/Assets/Editor/McpBridge/UnityMcpBridge.cs"
-    panel = bridge_panel({
-        "bridgeVersion": "0.6.0",
-        "supportedTools": [tool for tool in REQUIRED_ANIMATION_TOOLS
-                           if tool != "unity_create_animator_controller"],
-        "installedBridgePath": installed,
-    })
+    panel = bridge_panel(
+        {
+            "bridgeVersion": "0.6.0",
+            "supportedTools": [
+                tool
+                for tool in REQUIRED_ANIMATION_TOOLS
+                if tool != "unity_create_animator_controller"
+            ],
+            "installedBridgePath": installed,
+        }
+    )
     assert panel.avatar_preset.isEnabled()
     assert not panel.animation_preset.isEnabled()
     assert "Avatar: 준비 · Clip: 준비 · Controller: 미지원" == panel.bridge_tools_status.text()
@@ -124,9 +140,12 @@ def test_partial_tools_show_exact_missing_tool_and_actual_install_path(qapp):
 
 
 def test_saved_preset_and_shortcuts_are_rechecked_after_reconnection(qapp):
-    panel = bridge_panel({
-        "bridgeVersion": "0.6.0", "supportedTools": list(REQUIRED_ANIMATION_TOOLS),
-    })
+    panel = bridge_panel(
+        {
+            "bridgeVersion": "0.6.0",
+            "supportedTools": list(REQUIRED_ANIMATION_TOOLS),
+        }
+    )
     panel.animation_preset.click()
     draft = panel.input.toPlainText()
     panel.set_session(UnitySession("legacy", "C:/UnityProject", status="ready"))
@@ -138,10 +157,17 @@ def test_saved_preset_and_shortcuts_are_rechecked_after_reconnection(qapp):
     assert not panel.send_button.isEnabled()
     assert panel.input.toPlainText() == draft
     assert "필수 도구 누락" in panel.request_status.text()
-    panel.set_session(UnitySession(
-        "upgraded", "C:/UnityProject", status="ready",
-        project_identity={"bridgeVersion": "0.6.0", "supportedTools": list(REQUIRED_ANIMATION_TOOLS)},
-    ))
+    panel.set_session(
+        UnitySession(
+            "upgraded",
+            "C:/UnityProject",
+            status="ready",
+            project_identity={
+                "bridgeVersion": "0.6.0",
+                "supportedTools": list(REQUIRED_ANIMATION_TOOLS),
+            },
+        )
+    )
     assert panel.send_button.isEnabled()
     assert panel.bridge_guidance.isHidden()
     panel.send_shortcut.activated.emit()
@@ -187,9 +213,12 @@ def test_scene_preset_requires_framing_tool_and_saves_new_scoped_scene_before_ca
 
 
 def test_disconnected_presets_ignore_cached_compatible_identity(qapp):
-    panel = bridge_panel({
-        "bridgeVersion": "0.6.0", "supportedTools": list(REQUIRED_ANIMATION_TOOLS),
-    })
+    panel = bridge_panel(
+        {
+            "bridgeVersion": "0.6.0",
+            "supportedTools": list(REQUIRED_ANIMATION_TOOLS),
+        }
+    )
     panel.session.status = "closed"
     panel.set_session(panel.session)
     assert not panel.avatar_preset.isEnabled()
@@ -200,9 +229,12 @@ def test_disconnected_presets_ignore_cached_compatible_identity(qapp):
 
 
 def test_third_preset_does_not_increase_panel_minimum_width(qapp):
-    panel = bridge_panel({
-        "bridgeVersion": "0.6.0", "supportedTools": [*REQUIRED_ANIMATION_TOOLS, *FRAMING_TOOLS],
-    })
+    panel = bridge_panel(
+        {
+            "bridgeVersion": "0.6.0",
+            "supportedTools": [*REQUIRED_ANIMATION_TOOLS, *FRAMING_TOOLS],
+        }
+    )
     panel.setStyleSheet(build_stylesheet("dark"))
     panel.resize(853, 533)
     panel.show()
@@ -394,10 +426,15 @@ def test_connection_failure_is_visible_even_with_cached_identity(qapp):
     assert panel.project_path.text() == "C:/UnityProject"
     assert not panel.project_path.isEnabled()
     assert not panel.browse_button.isEnabled()
-    panel.set_session(UnitySession(
-        "session-001", "C:/UnityProject", status="failed", error="Bridge 연결 시간 초과",
-        project_identity={"productName": "Last project", "projectPath": "C:/UnityProject"},
-    ))
+    panel.set_session(
+        UnitySession(
+            "session-001",
+            "C:/UnityProject",
+            status="failed",
+            error="Bridge 연결 시간 초과",
+            project_identity={"productName": "Last project", "projectPath": "C:/UnityProject"},
+        )
+    )
     assert "Bridge 연결 시간 초과" in panel.identity_status.text()
     assert panel.identity_status.property("connectionState") == "error"
     assert panel.connect_button.text() == "다시 연결"

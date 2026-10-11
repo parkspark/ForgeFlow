@@ -549,15 +549,19 @@ class UnityPanel(QWidget):
                 "ok" if compatibility.ready else "error",
             )
             groups = [
-                f"{name}: " + (
-                    "준비" if bridge_compatibility(
+                f"{name}: "
+                + (
+                    "준비"
+                    if bridge_compatibility(
                         session.project_identity, session.project_path, tools
-                    ).ready else "미지원"
+                    ).ready
+                    else "미지원"
                 )
                 for name, tools in BRIDGE_TOOL_GROUPS.items()
             ]
             self._set_connection_label(
-                self.bridge_tools_status, " · ".join(groups),
+                self.bridge_tools_status,
+                " · ".join(groups),
                 "ok" if compatibility.ready else "error",
             )
             self.bridge_guidance.setText(compatibility.guidance)
@@ -647,7 +651,8 @@ class UnityPanel(QWidget):
         ):
             compatibility = bridge_compatibility(
                 self.session.project_identity if self.session else None,
-                self.session.project_path if self.session else self.project_path.text(), tools,
+                self.session.project_path if self.session else self.project_path.text(),
+                tools,
             )
             button.setEnabled(
                 can_request and bool(self.job.unity_asset_path) and compatibility.ready
@@ -714,11 +719,14 @@ class UnityPanel(QWidget):
             turn.user_text if turn else "", self.review_note.toPlainText()
         )
         self.repair_button.setEnabled(
-            can_request and repairable and bool(self.review_note.toPlainText().strip())
+            can_request
+            and repairable
+            and bool(self.review_note.toPlainText().strip())
             and not repair_problem
         )
         self.repair_button.setToolTip(
-            repair_problem or "검토 메모에 바꿀 내용을 적고 연결 상태를 확인한 뒤 수정 요청을 보내세요."
+            repair_problem
+            or "검토 메모에 바꿀 내용을 적고 연결 상태를 확인한 뒤 수정 요청을 보내세요."
         )
         for button, kind in (
             (self.screenshot_button, "screenshot"),

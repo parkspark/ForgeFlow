@@ -41,6 +41,7 @@ class RiggingInput:
     stage: str
     version: int | None
     label: str
+    registered_sha256: str | None = None
 
 
 @dataclass
@@ -114,7 +115,11 @@ class RiggingAdapter:
             origin = (
                 f"Blender v{(item.version or 0):03d}" if item.stage == "blender" else "모델링 원본"
             )
-            candidates.append(RiggingInput(path, item.stage, item.version, f"{origin} · {path}"))
+            if not item.sha256:
+                origin += " · 등록 해시 없음 · 현재 파일 기준"
+            candidates.append(
+                RiggingInput(path, item.stage, item.version, f"{origin} · {path}", item.sha256)
+            )
         return candidates
 
     def select_input(self, job: Job, selected: str | Path | None = None) -> RiggingInput:
@@ -151,6 +156,14 @@ class RiggingAdapter:
         selected = self.select_input(job, selected_input)
         source = self.validate_input(selected.path)
         seed_value = self.validate_seed(seed)
+        # A legacy artifact without a hash can only establish this run's baseline;
+        # never backfill it as proof of the original registered asset's contents.
+        input_sha256 = sha256_file(source)
+        if selected.registered_sha256 and input_sha256 != selected.registered_sha256:
+            raise ValueError(
+                f"등록된 GLB의 내용이 변경되어 SHA-256이 일치하지 않습니다: {source}\n"
+                "모델링 또는 Blender에서 새 결과 버전을 생성한 뒤 리깅하세요."
+            )
         version = self.jobs.next_rigging_version(job)
         safe_name = self.safe_name(job.job_id, version)
         final_directory = self.jobs.job_directory(job.job_id) / "rigging" / f"v{version:03d}"
@@ -175,7 +188,6 @@ class RiggingAdapter:
             execution_input = staging / "input.glb"
             shutil.copy2(source, execution_input)
 
-        input_sha256 = sha256_file(source)
         if staged and sha256_file(execution_input) != input_sha256:
             raise RuntimeError("staging 복사 중 입력 GLB 내용이 변경되었습니다.")
         request = RiggingRequest(

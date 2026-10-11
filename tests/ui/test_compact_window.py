@@ -58,8 +58,10 @@ def test_laptop_window_keeps_tabs_cancel_and_actions_reachable(config, image, qa
             (
                 window.unity_panel,
                 [
-                    window.unity_panel.connect_button, window.unity_panel.send_button,
-                    window.unity_panel.avatar_preset, window.unity_panel.animation_preset,
+                    window.unity_panel.connect_button,
+                    window.unity_panel.send_button,
+                    window.unity_panel.avatar_preset,
+                    window.unity_panel.animation_preset,
                     window.unity_panel.scene_preset,
                 ],
             ),

@@ -340,17 +340,26 @@ class UnityAdapter(QObject):
                     "projectPath": actual,
                     "unityVersion": event.get("unityVersion"),
                     "productName": event.get("productName"),
-                    **{key: event.get(key) for key in (
-                        "protocolVersion", "capabilities", "bridgeVersion", "supportedTools",
-                        "bridgeSha256", "bridgeSourcePath",
-                        "bridgeSourceDiskSha256", "bridgeSourceHashKind", "bridgeSourceMatchesDisk",
-                    )},
+                    **{
+                        key: event.get(key)
+                        for key in (
+                            "protocolVersion",
+                            "capabilities",
+                            "bridgeVersion",
+                            "supportedTools",
+                            "bridgeSha256",
+                            "bridgeSourcePath",
+                            "bridgeSourceDiskSha256",
+                            "bridgeSourceHashKind",
+                            "bridgeSourceMatchesDisk",
+                        )
+                    },
                     **collect_bridge_diagnostics(self.config.unity_mcp_root, actual, event),
                 }
                 identity = self.session.project_identity
-                self._record_event(json.dumps(
-                    {"type": "bridge_diagnostics", **identity}, ensure_ascii=False
-                ))
+                self._record_event(
+                    json.dumps({"type": "bridge_diagnostics", **identity}, ensure_ascii=False)
+                )
                 self.log_received.emit(
                     f"Unity Bridge: running={identity['bridgeVersion'] or 'unknown'}; "
                     f"source version={identity['sourceBridgeVersion'] or 'unknown'}, "
@@ -454,8 +463,10 @@ class UnityAdapter(QObject):
         if not isinstance(exact_text, str) or not exact_text.strip():
             raise ValueError("Unity 명령을 입력하세요.")
         problem = request_bridge_problem(
-            self.session.project_identity, self.session.project_path,
-            exact_text, human_review_feedback or "",
+            self.session.project_identity,
+            self.session.project_path,
+            exact_text,
+            human_review_feedback or "",
         )
         if problem:
             raise RuntimeError(problem)

@@ -9,8 +9,12 @@ from forgeflow.ui.panels.rigging_panel import RiggingPanel
 
 def job(name, input_path=None):
     return Job(
-        job_id=name, name=name, created_at="2026-09-20", updated_at="2026-09-20",
-        input_image_path=f"{name}.png", blender_input_path=input_path or f"C:/fixtures/{name}.glb",
+        job_id=name,
+        name=name,
+        created_at="2026-09-20",
+        updated_at="2026-09-20",
+        input_image_path=f"{name}.png",
+        blender_input_path=input_path or f"C:/fixtures/{name}.glb",
     )
 
 
@@ -20,9 +24,12 @@ def inspection(name):
 
 def rig_request(owner, version=1, input_path=None):
     request = RiggingRequest(
-        input_path=input_path or owner.blender_input_path, input_sha256="fixture",
+        input_path=input_path or owner.blender_input_path,
+        input_sha256="fixture",
         output_directory=f"C:/fixtures/{owner.job_id}/v{version:03d}",
-        version=version, seed=12345, safe_name=owner.job_id,
+        version=version,
+        seed=12345,
+        safe_name=owner.job_id,
     )
     owner.rigging_requests.append(request)
     owner.stages["rigging"].status = "running"
@@ -51,12 +58,20 @@ def test_blender_refresh_keeps_draft_and_cursor():
 def test_blender_switch_separates_and_restores_each_job_draft_inspection_plan():
     panel = BlenderPanel()
     a, b = job("A"), job("B")
-    a.blender_requests.append(BlenderRequest(
-        request="A만 편집", input_path=a.blender_input_path, output_directory="C:/fixtures/A/v001",
-        version=1, status="awaiting_approval", plan={"steps": [
-            {"number": 1, "description": "A 계획", "tool": "fixture", "arguments": {}},
-        ]},
-    ))
+    a.blender_requests.append(
+        BlenderRequest(
+            request="A만 편집",
+            input_path=a.blender_input_path,
+            output_directory="C:/fixtures/A/v001",
+            version=1,
+            status="awaiting_approval",
+            plan={
+                "steps": [
+                    {"number": 1, "description": "A 계획", "tool": "fixture", "arguments": {}},
+                ]
+            },
+        )
+    )
     panel.set_job(a)
     panel.request.setPlainText("A 초안")
     panel.set_inspection(inspection("A_Mesh"))
@@ -108,11 +123,16 @@ def test_blender_late_inspection_is_routed_to_original_job():
 def test_blender_plan_for_old_input_cannot_be_approved():
     panel = BlenderPanel()
     owner = job("A")
-    owner.blender_requests.append(BlenderRequest(
-        request="이전 입력 계획", input_path="C:/fixtures/A/old.glb",
-        output_directory="C:/fixtures/A/v001", version=1,
-        status="awaiting_approval", plan={"steps": []},
-    ))
+    owner.blender_requests.append(
+        BlenderRequest(
+            request="이전 입력 계획",
+            input_path="C:/fixtures/A/old.glb",
+            output_directory="C:/fixtures/A/v001",
+            version=1,
+            status="awaiting_approval",
+            plan={"steps": []},
+        )
+    )
     panel.set_job(owner)
     assert not panel.approve.isEnabled()
     assert panel.deny.isEnabled()

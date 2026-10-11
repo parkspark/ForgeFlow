@@ -117,6 +117,108 @@ def test_explicit_glb_must_belong_to_job(config, image, tmp_path):
         adapter.select_input(job, external)
 
 
+@pytest.mark.parametrize("stage", ["modeling", "blender"])
+@pytest.mark.parametrize("explicit", [False, True], ids=["default", "explicit"])
+@pytest.mark.parametrize("spaced", [False, True], ids=["direct", "staging"])
+def test_changed_registered_glb_rejected_before_preparing_run(
+    config, image, tmp_path, monkeypatch, stage, explicit, spaced
+):
+    if spaced:
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path.parent / "safe-staging"))
+    _config, jobs, job, adapter, source = make_adapter(
+        config, image, jobs_root=tmp_path / "jobs with spaces" if spaced else None
+    )
+    if stage == "blender":
+        source = add_blender_glb(jobs, job, 1)
+    original_hash = next(item.sha256 for item in job.artifacts if Path(item.path) == source)
+    source.write_bytes(glb_bytes("valid-but-changed"))
+    changed_bytes = source.read_bytes()
+    assert sha256_file(source) != original_hash
+    job_file = jobs.job_directory(job.job_id) / "job.json"
+    saved_job = job_file.read_bytes()
+    before = job.to_dict()
+
+    def unexpected_copy(*_args, **_kwargs):
+        raise AssertionError("changed registered input must be rejected before staging")
+
+    monkeypatch.setattr("forgeflow.adapters.rigging_adapter.shutil.copy2", unexpected_copy)
+    with pytest.raises(ValueError, match="등록된 GLB의 내용이 변경.*SHA-256"):
+        adapter.build_rigging(job, source if explicit else None)
+
+    assert source.read_bytes() == changed_bytes
+    assert job.to_dict() == before
+    assert job_file.read_bytes() == saved_job
+    assert not list((jobs.job_directory(job.job_id) / "rigging").iterdir())
+    assert not (config.rigging_staging_root / job.job_id).exists()
+
+
+@pytest.mark.parametrize("explicit", [False, True], ids=["default", "explicit"])
+@pytest.mark.parametrize("stage", ["modeling", "blender"])
+def test_legacy_glb_without_registered_hash_records_only_run_baseline(
+    config, image, explicit, stage
+):
+    _config, jobs, job, adapter, source = make_adapter(config, image)
+    if stage == "blender":
+        source = add_blender_glb(jobs, job, 1)
+    artifact = next(item for item in job.artifacts if item.path == str(source))
+    artifact.sha256 = None
+    jobs.save(job)
+    restored = jobs.load(job.job_id)
+    job_file = jobs.job_directory(job.job_id) / "job.json"
+    saved_job = job_file.read_bytes()
+    original_bytes = source.read_bytes()
+    before = restored.to_dict()
+    selected = adapter.select_input(restored, source if explicit else None)
+
+    assert selected.registered_sha256 is None
+    assert "등록 해시 없음 · 현재 파일 기준" in selected.label
+    _command, run = adapter.build_rigging(restored, source if explicit else None)
+
+    assert run.request.input_sha256 == sha256_file(source)
+    assert restored.to_dict() == before
+    assert next(item for item in restored.artifacts if item.path == str(source)).sha256 is None
+    assert job_file.read_bytes() == saved_job
+    assert source.read_bytes() == original_bytes
+
+
+@pytest.mark.parametrize("explicit", [False, True], ids=["default", "explicit"])
+def test_changed_asset_registered_as_new_blender_version_can_be_rigged(config, image, explicit):
+    _config, jobs, job, adapter, source = make_adapter(config, image)
+    source.write_bytes(glb_bytes("edited-asset"))
+    newest = add_blender_glb(jobs, job, 2, b"edited-asset")
+    source_bytes = source.read_bytes()
+    newest_bytes = newest.read_bytes()
+
+    _command, run = adapter.build_rigging(job, newest if explicit else None)
+
+    assert run.input_path == newest
+    assert run.request.input_sha256 == sha256_file(newest)
+    assert source.read_bytes() == source_bytes
+    assert newest.read_bytes() == newest_bytes
+
+
+@pytest.mark.parametrize("spaced", [False, True], ids=["direct", "staging"])
+def test_registered_input_hash_is_reused_for_request_and_staging(
+    config, image, tmp_path, monkeypatch, spaced
+):
+    if spaced:
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path.parent / "safe-staging"))
+    _config, _jobs, job, adapter, source = make_adapter(
+        config, image, jobs_root=tmp_path / "jobs with spaces" if spaced else None
+    )
+    calls = []
+
+    def traced_hash(path):
+        calls.append(Path(path).resolve())
+        return sha256_file(path)
+
+    monkeypatch.setattr("forgeflow.adapters.rigging_adapter.sha256_file", traced_hash)
+    _command, run = adapter.build_rigging(job)
+
+    assert run.request.input_sha256 == job.artifacts[0].sha256
+    assert calls == ([source.resolve(), run.execution_input] if spaced else [source.resolve()])
+
+
 @pytest.mark.parametrize("name, message", [("asset.fbx", "GLB"), ("missing.glb", "존재")])
 def test_invalid_input_rejected(config, image, tmp_path, name, message):
     _config, _jobs, _job, adapter, _source = make_adapter(config, image)

@@ -42,12 +42,17 @@ def test_unity_presets_preserve_draft_and_old_approval_is_history(config, image)
     panel = UnityPanel()
     try:
         panel.set_job(job)
-        panel.set_session(UnitySession(
-            "s1", "C:/UnityProject", status="ready",
-            project_identity={
-                "bridgeVersion": "0.6.0", "supportedTools": ["unity_configure_humanoid"],
-            },
-        ))
+        panel.set_session(
+            UnitySession(
+                "s1",
+                "C:/UnityProject",
+                status="ready",
+                project_identity={
+                    "bridgeVersion": "0.6.0",
+                    "supportedTools": ["unity_configure_humanoid"],
+                },
+            )
+        )
         panel.input.setPlainText("기존 요청")
         panel.avatar_preset.click()
         assert panel.input.toPlainText().startswith("기존 요청")

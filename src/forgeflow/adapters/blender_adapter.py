@@ -58,7 +58,6 @@ class BlenderAdapter:
         preserve_rig = is_rigged_input(job, input_path)
         version = self.jobs.next_blender_version(job)
         version_dir = self.jobs.job_directory(job.job_id) / "blender" / f"v{version:03d}"
-        version_dir.mkdir(parents=True, exist_ok=False)
         proposal_path = version_dir / "proposal.json"
         enriched = (
             f"input_path는 '{input_path}'이고 output_directory는 '{version_dir.resolve()}'이다. "
@@ -85,6 +84,7 @@ class BlenderAdapter:
         command = self._base_command(
             job, ["propose", "--prompt", enriched, "--output", str(proposal_path)]
         )
+        version_dir.mkdir(parents=True, exist_ok=False)
         return command, record
 
     def load_proposal(self, request: BlenderRequest) -> dict[str, Any]:

@@ -46,6 +46,7 @@ class PipelineService(QObject):
         self.process.failed_to_start.connect(self._on_start_error)
         self._handler: Callable[[int], None] | None = None
         self._active_job: Job | None = None
+        self._active_blender_request: BlenderRequest | None = None
         self._operation = ""
         self._log_path: Path | None = None
         self._log_handle: TextIO | None = None
@@ -193,6 +194,8 @@ class PipelineService(QObject):
             self.operation_finished.emit("inspect", False, str(exc))
 
     def start_proposal(self, job: Job, user_request: str) -> None:
+        if self.busy:
+            raise RuntimeError("다른 작업이 실행 중입니다.")
         command, request = self.blender.build_proposal(job, user_request)
         self.jobs.add_blender_request(job, request)
         log_path = Path(request.output_directory) / "planning.log"
@@ -202,6 +205,7 @@ class PipelineService(QObject):
             command,
             log_path,
             lambda code: self._proposal_finished(job, request, code),
+            blender_request=request,
         )
 
     def _proposal_finished(self, job: Job, request: BlenderRequest, exit_code: int) -> None:
@@ -221,6 +225,8 @@ class PipelineService(QObject):
             self.operation_finished.emit("blender_plan", False, detail)
 
     def approve(self, job: Job) -> None:
+        if self.busy:
+            raise RuntimeError("다른 작업이 실행 중입니다.")
         request = job.latest_blender_request
         if request is None:
             raise RuntimeError("승인할 Blender 계획이 없습니다.")
@@ -235,6 +241,7 @@ class PipelineService(QObject):
             command,
             log_path,
             lambda code: self._execution_finished(job, request, execution, original_hash, code),
+            blender_request=request,
         )
 
     def _execution_finished(
@@ -403,18 +410,24 @@ class PipelineService(QObject):
         command: ProcessCommand,
         log_path: Path | None,
         handler: Callable[[int], None],
+        *,
+        blender_request: BlenderRequest | None = None,
     ) -> None:
         if self.process.running:
             raise RuntimeError("다른 작업이 실행 중입니다.")
         self._active_job = job
+        self._active_blender_request = blender_request
         self._operation = operation
-        self._prepare_log(log_path)
         self._json_events = []
         self._cancelled = False
         self._handler = handler
-        self.event_received.emit({"type": "stage_started", "stage": operation})
-        self.job_changed.emit(job)
-        self.process.start(command)
+        try:
+            self._prepare_log(log_path)
+            self.event_received.emit({"type": "stage_started", "stage": operation})
+            self.job_changed.emit(job)
+            self.process.start(command)
+        except Exception as exc:
+            self._on_start_error(str(exc))
 
     def _on_line(self, channel: str, line: str) -> None:
         rendered = f"[{channel}] {line}"
@@ -440,9 +453,17 @@ class PipelineService(QObject):
     def _on_finished(self, exit_code: int, _exit_status) -> None:
         self.process.flush()
         handler, self._handler = self._handler, None
+        request, self._active_blender_request = self._active_blender_request, None
         try:
+            if handler is None:
+                return
             if self._cancelled:
                 job = self._active_job
+                if job and self._operation in {"blender_plan", "blender"}:
+                    self._abort_blender_operation(
+                        job, request, self._operation, "cancelled", "사용자가 실행을 취소했습니다."
+                    )
+                    return
                 if job and self._operation.startswith("rigging_preview"):
                     request = job.latest_rigging_request
                     if request:
@@ -486,9 +507,21 @@ class PipelineService(QObject):
                 self._close_log()
 
     def _on_start_error(self, message: str) -> None:
+        if self._handler is None:
+            return
         self._handler = None
+        request, self._active_blender_request = self._active_blender_request, None
         try:
             job = self._active_job
+            if job and self._operation in {"blender_plan", "blender"}:
+                self._abort_blender_operation(
+                    job,
+                    request,
+                    self._operation,
+                    "failed",
+                    f"프로세스를 시작할 수 없습니다: {message}",
+                )
+                return
             if job and self._operation in {
                 "modeling",
                 "modeling_vram",
@@ -514,6 +547,24 @@ class PipelineService(QObject):
         finally:
             if self._handler is None and not self.process.running:
                 self._close_log()
+
+    def _abort_blender_operation(
+        self,
+        job: Job,
+        request: BlenderRequest | None,
+        operation: str,
+        status: str,
+        message: str,
+    ) -> None:
+        if request is not None:
+            request.status = status
+        if operation == "blender":
+            self.jobs.set_stage(job, "blender", status, error=message)
+        else:
+            # Planning does not replace a previously completed Blender result.
+            self.jobs.save(job)
+        self.job_changed.emit(job)
+        self.operation_finished.emit(operation, False, message)
 
     def _prepare_log(self, path: Path | None) -> None:
         if path == self._log_path and self._log_handle is not None:

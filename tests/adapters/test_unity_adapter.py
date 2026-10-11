@@ -128,7 +128,9 @@ def test_project_identity_mismatch_is_blocked(config, image, unity_project, tmp_
     assert "불일치" in adapter.session.error
 
 
-def test_bridge_handshake_persists_fingerprints_and_logs_at_connection(config, image, unity_project):
+def test_bridge_handshake_persists_fingerprints_and_logs_at_connection(
+    config, image, unity_project
+):
     jobs, job, adapter = _adapter(config, image, unity_project)
     jobs.add_unity_session(job, adapter.session)
     source = adapter.config.unity_mcp_root / "UnityBridge/UnityMcpBridge.cs"
@@ -140,12 +142,16 @@ def test_bridge_handshake_persists_fingerprints_and_logs_at_connection(config, i
     logs = []
     adapter.log_received.connect(logs.append)
     metadata = {
-        "projectPath": str(unity_project), "bridgeVersion": "0.5.0",
+        "projectPath": str(unity_project),
+        "bridgeVersion": "0.5.0",
         "supportedTools": list(REQUIRED_ANIMATION_TOOLS),
-        "protocolVersion": 2, "capabilities": ["jsonl"],
-        "bridgeSha256": "a" * 64, "bridgeSourcePath": str(installed),
+        "protocolVersion": 2,
+        "capabilities": ["jsonl"],
+        "bridgeSha256": "a" * 64,
+        "bridgeSourcePath": str(installed),
         "bridgeSourceDiskSha256": sha256_file(installed),
-        "bridgeSourceHashKind": "startup", "bridgeSourceMatchesDisk": False,
+        "bridgeSourceHashKind": "startup",
+        "bridgeSourceMatchesDisk": False,
     }
 
     adapter._handle_event({"type": "session_ready", **metadata})
@@ -172,11 +178,14 @@ def test_bridge_handshake_persists_fingerprints_and_logs_at_connection(config, i
     assert adapter.send_prompt("현재 씬을 분석해줘").status == "running"
 
 
-@pytest.mark.parametrize("metadata", [
-    {},
-    {"bridgeVersion": "0.5.0", "supportedTools": list(REQUIRED_ANIMATION_TOOLS)},
-    {"bridgeVersion": "0.6.0", "supportedTools": ["unity_configure_humanoid"]},
-])
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {},
+        {"bridgeVersion": "0.5.0", "supportedTools": list(REQUIRED_ANIMATION_TOOLS)},
+        {"bridgeVersion": "0.6.0", "supportedTools": ["unity_configure_humanoid"]},
+    ],
+)
 def test_unsupported_presets_never_reach_model_and_general_chat_still_works(
     config, image, unity_project, metadata
 ):
@@ -202,12 +211,18 @@ def test_supported_animation_request_is_sent_and_repair_feedback_is_guarded(
     with pytest.raises(RuntimeError, match="unity_create_animation_clip"):
         adapter.send_review_repair(source.turn_id, "unity_create_animation_clip으로 수정해줘")
     assert adapter.process.stdin.getvalue() == ""
-    adapter._handle_event({
-        "type": "session_ready", "projectPath": str(unity_project),
-        "bridgeVersion": "0.6.0", "supportedTools": list(REQUIRED_ANIMATION_TOOLS),
-        "bridgeSha256": "a" * 64, "bridgeSourceDiskSha256": "b" * 64,
-        "bridgeSourceHashKind": "startup", "bridgeSourceMatchesDisk": False,
-    })
+    adapter._handle_event(
+        {
+            "type": "session_ready",
+            "projectPath": str(unity_project),
+            "bridgeVersion": "0.6.0",
+            "supportedTools": list(REQUIRED_ANIMATION_TOOLS),
+            "bridgeSha256": "a" * 64,
+            "bridgeSourceDiskSha256": "b" * 64,
+            "bridgeSourceHashKind": "startup",
+            "bridgeSourceMatchesDisk": False,
+        }
+    )
     turn = adapter.send_prompt("선택한 FBX의 Avatar와 애니메이션 클립을 검사해줘.")
     assert json.loads(adapter.process.stdin.getvalue())["id"] == turn.turn_id
     assert turn.status == "running"

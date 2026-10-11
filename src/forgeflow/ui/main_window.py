@@ -81,7 +81,11 @@ class WorkspaceTitle(QLabel):
 class MainWindow(QMainWindow):
     def __init__(self, config: AppConfig | None = None, *, run_environment_checks: bool = True):
         super().__init__()
-        self.config = config or AppConfig.load()
+        self.config_warnings: list[str] = []
+        if config is None:
+            self.config, self.config_warnings = AppConfig.load_with_diagnostics()
+        else:
+            self.config = config
         self.saved_config = self.config
         self.jobs = JobService(self.config.jobs_root)
         self.job_list = self.jobs.recover_interrupted()
@@ -111,6 +115,24 @@ class MainWindow(QMainWindow):
         self.resize(min(1480, available.width() - 40), min(940, available.height() - 80))
         central = QWidget()
         root = QVBoxLayout(central)
+        self.config_recovery_banner = QFrame()
+        recovery_layout = QHBoxLayout(self.config_recovery_banner)
+        self.config_recovery_message = QLabel(
+            "설정을 복구했습니다. 실행 환경과 작업 폴더를 확인해 주세요."
+        )
+        self.config_recovery_message.setTextFormat(Qt.TextFormat.PlainText)
+        self.config_recovery_message.setWordWrap(True)
+        self.config_recovery_message.setProperty("envState", "error")
+        self.config_recovery_message.setToolTip("\n\n".join(self.config_warnings))
+        recovery_layout.addWidget(self.config_recovery_message, 1)
+        self.config_recovery_details = QPushButton("복구 정보")
+        self.config_recovery_details.clicked.connect(self._show_config_recovery_details)
+        recovery_layout.addWidget(self.config_recovery_details)
+        self.config_recovery_settings = QPushButton("설정 확인")
+        self.config_recovery_settings.clicked.connect(self.edit_settings)
+        recovery_layout.addWidget(self.config_recovery_settings)
+        self.config_recovery_banner.setVisible(bool(self.config_warnings))
+        root.addWidget(self.config_recovery_banner)
         environment_box = QGroupBox("환경 연결 상태")
         env_root = QVBoxLayout(environment_box)
         env_layout = QHBoxLayout()
@@ -288,6 +310,9 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("준비됨")
         self._apply_theme(selected_theme)
         self._update_detail_heights()
+
+    def _show_config_recovery_details(self) -> None:
+        QMessageBox.warning(self, "설정 복구 정보", "\n\n".join(self.config_warnings))
 
     def _show_panel(self, panel: QWidget) -> None:
         self.tabs.setCurrentWidget(self.tab_pages[panel])
@@ -754,6 +779,26 @@ class MainWindow(QMainWindow):
             return
         if self._gpu_blocked_by_unity():
             return
+        selected_path = Path(selected_input).resolve(strict=False)
+        selected = next(
+            (
+                choice
+                for choice in self.pipeline.rigging.available_inputs(self.current_job)
+                if choice.path == selected_path
+            ),
+            None,
+        )
+        if selected is None:
+            QMessageBox.critical(
+                self, "자동 리깅 시작 실패", "선택한 GLB는 이 작업에 등록된 산출물이 아닙니다."
+            )
+            return
+        integrity_notice = (
+            "등록 당시 해시가 없는 이전 결과입니다. 등록 이후 변경 여부는 확인할 수 없으며, "
+            "현재 파일을 이번 실행의 기준으로 기록합니다.\n\n"
+            if not selected.registered_sha256
+            else ""
+        )
         version = self.jobs.next_rigging_version(self.current_job)
         output = self.jobs.job_directory(self.current_job.job_id) / "rigging" / f"v{version:03d}"
         answer = QMessageBox.question(
@@ -763,6 +808,7 @@ class MainWindow(QMainWindow):
             f"입력: {Path(selected_input).resolve(strict=False)}\n"
             f"출력: {output.resolve(strict=False)}\n"
             f"Seed: {seed}\n\n"
+            f"{integrity_notice}"
             "원본 GLB는 변경하지 않으며 PASS는 구조 검증만 의미합니다.",
         )
         if answer != QMessageBox.StandardButton.Yes:

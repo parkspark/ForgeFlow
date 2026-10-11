@@ -136,6 +136,10 @@ class JobService:
         recovered: list[Job] = []
         for job in self.list_jobs():
             changed = False
+            for request in job.blender_requests:
+                if request.status in {"planning", "running"}:
+                    request.status = "failed"
+                    changed = True
             for name, stage in job.stages.items():
                 if stage.status == "running":
                     stage.status = "failed"
@@ -222,6 +226,13 @@ class JobService:
     def next_blender_version(self, job: Job) -> int:
         used = {item.version for item in job.artifacts if item.stage == "blender" and item.version}
         used.update(request.version for request in job.blender_requests)
+        blender_root = self.job_directory(job.job_id) / "blender"
+        for directory in blender_root.glob("v[0-9][0-9][0-9]*"):
+            try:
+                if directory.is_dir():
+                    used.add(int(directory.name[1:]))
+            except (OSError, ValueError):
+                continue
         return max(used, default=0) + 1
 
     def add_blender_request(self, job: Job, request: BlenderRequest) -> None:
